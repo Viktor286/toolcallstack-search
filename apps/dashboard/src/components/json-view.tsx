@@ -87,7 +87,7 @@ export function DownloadButton({
   );
 }
 
-/** Scrollable, coloured code. Pass `value` for JSON, or `text` for anything else. */
+/** Scrollable, coloured code; long lines wrap, keeping their indentation as typed. Pass `value` for JSON, or `text` for anything else. */
 export function CodeBlock({
   value,
   text,
@@ -104,7 +104,7 @@ export function CodeBlock({
   );
   return (
     <pre
-      className={`overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed text-muted-foreground ${className}`}
+      className={`overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere] whitespace-pre-wrap ${className}`}
       tabIndex={0}
     >
       {body}

@@ -14,6 +14,7 @@ cost. A dashboard shows all of it.
 ![toolcallstack-search-playground-01.png](apps/dashboard/img/toolcallstack-search-playground-01.png)
 
 ![toolcallstack-search-calls-02.png](apps/dashboard/img/toolcallstack-search-calls-02.png)
+
 ## Quick start
 
 Requires Node 24 and pnpm. Postgres is optional; it enables the call log, balance snapshots,
