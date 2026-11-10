@@ -47,6 +47,7 @@ function memoryStore() {
     usageByClient: async () => [],
     stats: async () => [],
     spendSince: async () => seededSpend,
+    recentOutcomes: async () => [],
     cleanup: async () => ({ calls: 0, raws: 0 }),
     ping: async () => {},
     close: async () => {},

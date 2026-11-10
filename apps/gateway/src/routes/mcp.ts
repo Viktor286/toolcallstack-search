@@ -4,7 +4,6 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { FastifyBaseLogger, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { toolDescription, toolInput } from "../agent-docs.ts";
-import { providers } from "../providers/index.ts";
 import { searchParamsSchema, type SearchResponse } from "../schema.ts";
 import { executeSearch, searchWithFallbacks } from "../search.ts";
 import type { Services } from "../services.ts";
@@ -62,7 +61,7 @@ function createMcpServer(
   client: string | null,
 ): McpServer {
   const server = new McpServer({ name: "toolcallstack-search", version: VERSION });
-  const describe = () => providers.map((provider) => describeProvider(provider, services));
+  const describe = () => services.providers.map((provider) => describeProvider(provider, services));
   server.registerTool(
     "web_search",
     { title: "Web search", description: toolDescription(describe()), inputSchema: toolInput.shape },

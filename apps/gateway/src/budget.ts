@@ -88,6 +88,13 @@ export class BudgetTracker {
     }
   }
 
+  /** Set spend to what the call log says, which includes the calls of other instances. */
+  replace(provider: string, day: Spend, month: Spend): void {
+    const state = this.#state(provider);
+    state.day = { ...day };
+    state.month = { ...month };
+  }
+
   setBalance(provider: string, remaining: number | null): void {
     this.#state(provider).remaining = remaining;
   }

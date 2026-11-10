@@ -78,6 +78,7 @@ interface Run {
 }
 
 function priceLabel(pricing: ProviderInfo["pricing"]): string | null {
+  if (pricing?.perRequestUsd === 0) return "free";
   if (pricing?.perRequestUsd !== undefined) return `$${pricing.perRequestUsd} / request`;
   if (pricing?.perCreditUsd !== undefined) return `$${pricing.perCreditUsd} / credit`;
   return null;
@@ -171,6 +172,16 @@ export function PlaygroundPage() {
         is exactly what the page sends, ready to copy into your own code.
       </p>
 
+      {all.some((provider) => provider.id.startsWith("demo-")) && (
+        <p className="mb-5 flex max-w-3xl gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground">
+          <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            Demo mode: Demo A and Demo B answer with results the gateway makes up, so everything
+            here works without an account anywhere. Add a provider API key to the gateway to search
+            the real web.
+          </span>
+        </p>
+      )}
       <div className="mb-8 grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_26rem]">
         <Card className="min-w-0">
           <CardContent>

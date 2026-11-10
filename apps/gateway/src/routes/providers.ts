@@ -1,7 +1,7 @@
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { balanceCredential } from "../balances.ts";
-import { providers, providersById } from "../providers/index.ts";
+import { providersById } from "../providers/index.ts";
 import type { Provider } from "../providers/types.ts";
 import { apiErrorSchema, providerInfoSchema } from "../schema.ts";
 import type { Services } from "../services.ts";
@@ -38,7 +38,7 @@ export const providerRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async () => ({
-      providers: providers.map((provider) => describeProvider(provider, app.services)),
+      providers: app.services.providers.map((provider) => describeProvider(provider, app.services)),
     }),
   );
 
@@ -53,7 +53,7 @@ export const providerRoutes: FastifyPluginAsyncZod = async (app) => {
     },
     async (request, reply) => {
       const provider = providersById.get(request.params.id);
-      if (!provider) {
+      if (!provider || !app.services.providers.includes(provider)) {
         return reply
           .code(404)
           .send({ error: { type: "unknown_provider", message: "no such provider" } });

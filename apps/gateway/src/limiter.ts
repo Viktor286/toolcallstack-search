@@ -11,12 +11,25 @@ export class QueueTimeoutError extends Error {
   override name = "QueueTimeoutError";
 }
 
+/** Holds a call back until its provider has a free slot. */
+export interface Limiter {
+  /** Requests waiting for a slot. */
+  depth(provider: string): number;
+  /**
+   * Run `task` once the provider has a free slot; the task is told how long it
+   * waited. Rejects with QueueTimeoutError, without running the task, when no
+   * slot frees up within `maxQueueMs`.
+   */
+  run<T>(provider: string, maxQueueMs: number, task: (queuedMs: number) => Promise<T>): Promise<T>;
+}
+
 /**
  * Outbound limits per provider, so the gateway holds back what a provider
  * would reject instead of sending it and retrying. Requests over a limit wait
- * in a FIFO queue. State is in memory, so limits apply per gateway process.
+ * in a FIFO queue. State is in memory, so limits apply per gateway process;
+ * PostgresLimiter shares them between processes.
  */
-export class ProviderLimiter {
+export class ProviderLimiter implements Limiter {
   readonly #queues = new Map<string, PQueue>();
 
   constructor(limits: Record<string, Limits | undefined>, intervalMs = 60_000) {
@@ -34,16 +47,10 @@ export class ProviderLimiter {
     }
   }
 
-  /** Requests waiting for a slot. */
   depth(provider: string): number {
     return this.#queues.get(provider)?.size ?? 0;
   }
 
-  /**
-   * Run `task` once the provider has a free slot; the task is told how long it
-   * waited. Rejects with QueueTimeoutError, without running the task, when no
-   * slot frees up within `maxQueueMs`.
-   */
   async run<T>(provider: string, maxQueueMs: number, task: (queuedMs: number) => Promise<T>) {
     const queue = this.#queues.get(provider);
     if (!queue) return task(0);

@@ -49,8 +49,20 @@ const configSchema = z.object({
             : { name: `key-${keyFingerprint(entry)}`, key: entry };
         }),
     ),
+  /**
+   * Built-in demo providers that answer without any network or account. `auto` offers them
+   * only while no real provider has an API key.
+   */
+  DEMO_MODE: z.enum(["auto", "true", "false"]).default("auto"),
   /** Postgres connection string. When unset, calls are logged but not stored. */
   DATABASE_URL: z.string().optional(),
+  /**
+   * Keep outbound rate limits, budgets and provider health in Postgres so several gateway
+   * instances act as one. Needs DATABASE_URL.
+   */
+  SHARED_STATE: flag,
+  /** How often an instance reloads budgets and provider health from the call log. */
+  SHARED_STATE_SYNC_SECONDS: z.coerce.number().min(0.1).default(10),
   /** Also store the untouched upstream body with every call. */
   STORE_RAW: flag,
   DEFAULT_TIMEOUT_MS: z.coerce.number().int().min(100).default(30_000),

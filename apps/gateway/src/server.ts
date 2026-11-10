@@ -1,6 +1,7 @@
 import { buildApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import { createPostgresStore, migrate } from "./store.ts";
+import { startTracing } from "./tracing.ts";
 
 const config = loadConfig();
 
@@ -10,13 +11,10 @@ if (config.DATABASE_URL) {
   await migrate(store.sql);
 }
 
-const app = await buildApp({ config, store });
+const tracing = startTracing(process.env);
+const app = await buildApp({ config, store, sql: store?.sql, tracing });
+if (tracing) app.log.info("OpenTelemetry tracing is on");
 if (!store) app.log.warn("DATABASE_URL is not set: search calls are logged but not stored");
-if (config.GATEWAY_API_KEYS.length === 0) {
-  app.log.warn(
-    "GATEWAY_API_KEYS is not set: the API is open to anyone who can reach this port, and every call spends provider credits",
-  );
-}
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {

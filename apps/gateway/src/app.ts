@@ -6,6 +6,7 @@ import swaggerUi from "@fastify/swagger-ui";
 import underPressure from "@fastify/under-pressure";
 import * as promClient from "@prometheus-io/client";
 import Fastify from "fastify";
+import type postgres from "postgres";
 import fastifyMetrics from "fastify-metrics";
 import {
   jsonSchemaTransform,
@@ -17,9 +18,10 @@ import { startBalancePoller } from "./balances.ts";
 import { BudgetTracker } from "./budget.ts";
 import type { Config } from "./config.ts";
 import { HealthTracker } from "./health.ts";
-import { ProviderLimiter } from "./limiter.ts";
+import { ProviderLimiter, type Limiter } from "./limiter.ts";
 import { createMetrics } from "./metrics.ts";
-import { providers } from "./providers/index.ts";
+import { demoProviders, withDemo } from "./providers/demo.ts";
+import { allProviders, providers as realProviders } from "./providers/index.ts";
 import { agentRoutes } from "./routes/agents.ts";
 import { callRoutes } from "./routes/calls.ts";
 import { mcpRoutes } from "./routes/mcp.ts";
@@ -28,7 +30,9 @@ import { searchRoutes } from "./routes/search.ts";
 import { statusRoutes } from "./routes/status.ts";
 import { uiRoutes } from "./routes/ui.ts";
 import type { Services } from "./services.ts";
+import { PostgresLimiter } from "./shared-limiter.ts";
 import type { Store } from "./store.ts";
+import type { Tracing } from "./tracing.ts";
 import { VERSION } from "./version.ts";
 import { createTransport, type Transport } from "./transport.ts";
 
@@ -43,26 +47,42 @@ export interface AppOptions {
   uiDir?: string;
   /** Length of the outbound rate-limit window; tests shorten it. */
   limitWindowMs?: number;
+  /** Connection for state shared between instances; required when SHARED_STATE is on. */
+  sql?: postgres.Sql;
+  /** Set when OpenTelemetry tracing is on; see tracing.ts. */
+  tracing?: Tracing | null;
 }
 
 export async function buildApp(options: AppOptions) {
   const { config } = options;
   const store = options.store ?? null;
-  const env = options.env ?? process.env;
-  const transport = options.transport ?? createTransport();
+  const demo =
+    config.DEMO_MODE === "true" ||
+    (config.DEMO_MODE === "auto" &&
+      !realProviders.some((provider) => (options.env ?? process.env)[provider.envVar]));
+  // The demo providers are "configured" through this variable, like a real one through its key.
+  const env = { ...(options.env ?? process.env), DEMO_MODE: demo ? "on" : undefined };
+  const providers = demo ? allProviders : realProviders;
+  const transport = withDemo(options.transport ?? createTransport());
   const metrics = createMetrics();
 
   // Environment overrides are merged over the defaults each provider declares.
   const limits = Object.fromEntries(
-    providers.map((p) => [p.id, { ...p.limits, ...config.PROVIDER_LIMITS[p.id] }]),
+    allProviders.map((p) => [p.id, { ...p.limits, ...config.PROVIDER_LIMITS[p.id] }]),
   );
   const pricing = Object.fromEntries(
-    providers.map((p) => {
+    allProviders.map((p) => {
       const merged = { ...p.pricing, ...config.PROVIDER_PRICING[p.id] };
       return [p.id, Object.keys(merged).length > 0 ? merged : undefined];
     }),
   );
-  const limiter = new ProviderLimiter(limits, options.limitWindowMs);
+  if (config.SHARED_STATE && !(options.sql && store)) {
+    throw new Error("SHARED_STATE needs DATABASE_URL: shared state is kept in Postgres");
+  }
+  const limiter: Limiter =
+    config.SHARED_STATE && options.sql
+      ? new PostgresLimiter(options.sql, limits, options.limitWindowMs)
+      : new ProviderLimiter(limits, options.limitWindowMs);
   const health = new HealthTracker();
   const budget = new BudgetTracker(config.PROVIDER_BUDGETS);
   const clients = config.GATEWAY_API_KEYS.map((entry) => ({
@@ -77,11 +97,15 @@ export async function buildApp(options: AppOptions) {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
+  // Before any route, so every request gets a span and continues the caller's trace.
+  if (options.tracing) await app.register(options.tracing.plugin);
+
   const services: Services = {
     config,
     env,
     metrics,
     store,
+    providers,
     limits,
     limiter,
     budget,
@@ -165,8 +189,16 @@ export async function buildApp(options: AppOptions) {
   }
 
   // The API proper: authenticated and rate limited. Health, metrics and docs stay public.
+  if (demo) {
+    app.log.info(
+      { providers: demoProviders.map((provider) => provider.id) },
+      "demo mode: built-in providers answer with generated results, nothing is sent upstream",
+    );
+  }
   if (config.GATEWAY_API_KEYS.length === 0) {
-    app.log.warn("GATEWAY_API_KEYS is empty: the gateway accepts unauthenticated requests");
+    app.log.warn(
+      "GATEWAY_API_KEYS is not set: the API is open to anyone who can reach this port, and every call spends provider credits",
+    );
   }
   await app.register(async (api) => {
     if (config.GATEWAY_API_KEYS.length > 0) {
@@ -232,12 +264,45 @@ export async function buildApp(options: AppOptions) {
 
   const timers: NodeJS.Timeout[] = [];
   let stopBalancePoller: (() => void) | undefined;
+  if (store && config.SHARED_STATE) {
+    // Other instances spend the same budgets and see the same providers, so this one
+    // regularly replaces its own counts with what the shared call log says.
+    const zero = { calls: 0, usd: 0, credits: 0 };
+    services.syncShared = async () => {
+      const { dayStart, monthStart } = budget.windows();
+      const [spends, outcomes] = await Promise.all([
+        store.spendSince(dayStart, monthStart),
+        store.recentOutcomes(20),
+      ]);
+      for (const provider of allProviders) {
+        const spend = spends.find((entry) => entry.provider === provider.id);
+        budget.replace(provider.id, spend?.day ?? zero, spend?.month ?? zero);
+        health.replace(
+          provider.id,
+          outcomes.filter((outcome) => outcome.provider === provider.id),
+        );
+      }
+    };
+    app.addHook("onReady", async () => {
+      const sync = () =>
+        services.syncShared?.().catch((error: unknown) => {
+          app.log.error({ err: error }, "could not reload shared state from the call log");
+        });
+      await sync();
+      const timer = setInterval(() => void sync(), config.SHARED_STATE_SYNC_SECONDS * 1000);
+      timer.unref();
+      timers.push(timer);
+      app.log.info("shared state: rate limits, budgets and provider health are kept in Postgres");
+    });
+  }
   if (store) {
     app.addHook("onReady", async () => {
       // Budgets continue from what the call log says was already spent today and this month.
       try {
         const { dayStart, monthStart } = budget.windows();
-        for (const spend of await store.spendSince(dayStart, monthStart)) {
+        // With shared state the sync above has already loaded it.
+        const spends = config.SHARED_STATE ? [] : await store.spendSince(dayStart, monthStart);
+        for (const spend of spends) {
           budget.seed(spend.provider, spend.day, spend.month);
         }
       } catch (error) {
@@ -275,6 +340,7 @@ export async function buildApp(options: AppOptions) {
     stopBalancePoller?.();
     for (const timer of timers) clearInterval(timer);
     await store?.close();
+    await options.tracing?.shutdown();
   });
 
   return app;

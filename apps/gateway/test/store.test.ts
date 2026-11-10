@@ -82,7 +82,7 @@ describe.skipIf(!databaseUrl)("postgres store", () => {
   beforeAll(async () => {
     store = createPostgresStore(databaseUrl!, { storeRaw: true });
     await store.sql`DROP SCHEMA IF EXISTS gateway CASCADE`;
-    expect(await migrate(store.sql)).toHaveLength(4);
+    expect(await migrate(store.sql)).toHaveLength(5);
     expect(await migrate(store.sql)).toEqual([]);
   });
   afterAll(() => store.close());

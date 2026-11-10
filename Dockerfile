@@ -12,6 +12,9 @@ COPY apps apps
 RUN pnpm --filter @toolcallstack/search-dashboard build
 
 FROM base
+LABEL org.opencontainers.image.source="https://github.com/Viktor286/toolcallstack-search" \
+      org.opencontainers.image.description="Unified API gateway for web search providers" \
+      org.opencontainers.image.licenses="MIT"
 ENV NODE_ENV=production
 RUN pnpm install --frozen-lockfile --prod --filter @toolcallstack/search-gateway
 COPY apps/gateway apps/gateway

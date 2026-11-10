@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { SpanKind, SpanStatusCode, context, trace, type Context } from "@opentelemetry/api";
 import type { FastifyBaseLogger } from "fastify";
 import type { BudgetTracker } from "./budget.ts";
 import { withCost, type Pricing } from "./cost.ts";
 import type { HealthTracker } from "./health.ts";
-import { QueueTimeoutError, type ProviderLimiter } from "./limiter.ts";
+import { QueueTimeoutError, type Limiter } from "./limiter.ts";
 import type { Metrics } from "./metrics.ts";
 import { providersById } from "./providers/index.ts";
 import type { Provider, UpstreamRequest } from "./providers/types.ts";
 import type { ErrorType, SearchError, SearchParams, SearchResponse } from "./schema.ts";
 import type { Store } from "./store.ts";
+import { tracer } from "./tracing.ts";
 import type { Phases, Transport } from "./transport.ts";
 import { deepMerge, keyFingerprint, redact } from "./util.ts";
 
@@ -28,7 +30,7 @@ export interface SearchDeps {
   defaultTimeoutMs: number;
   defaultMaxQueueMs: number;
   retry: RetryPolicy;
-  limiter: ProviderLimiter;
+  limiter: Limiter;
   budget: BudgetTracker;
   health: HealthTracker;
   pricing: Record<string, Pricing | undefined>;
@@ -137,10 +139,27 @@ async function attemptOnce(
   params: SearchParams,
   timeoutMs: number,
   queuedMs: number,
+  within: { parent: Context; index: number },
 ): Promise<Attempt> {
   // Built at send time so relative windows like freshness are anchored to the real request.
   const sentAt = new Date();
   const request = applyOptions(provider.buildRequest(params, apiKey, sentAt), params.options);
+  // The parent is passed in because the limiter may run this from another call's async context.
+  const span = tracer().startSpan(
+    `upstream ${provider.id}`,
+    {
+      kind: SpanKind.CLIENT,
+      startTime: sentAt,
+      attributes: {
+        "http.request.method": request.method,
+        // Host only: the full URL can carry the query text.
+        "server.address": new URL(request.url).host,
+        "search.attempt": within.index + 1,
+        "search.queued_ms": Math.round(queuedMs),
+      },
+    },
+    within.parent,
+  );
   const started = performance.now();
   const attempt: Attempt = {
     sentAt,
@@ -207,6 +226,20 @@ async function attemptOnce(
       fail("bad_response", `could not parse upstream response: ${message}`);
     }
   }
+
+  if (attempt.status !== null) span.setAttribute("http.response.status_code", attempt.status);
+  if (attempt.phases) {
+    const { connectionReused, ...phases } = attempt.phases;
+    span.setAttribute("search.connection_reused", connectionReused);
+    for (const [name, value] of Object.entries(phases)) {
+      if (value !== null) span.setAttribute(`search.phase.${name.replace(/Ms$/, "_ms")}`, value);
+    }
+  }
+  if (attempt.error) {
+    span.setAttribute("error.type", attempt.error.type);
+    span.setStatus({ code: SpanStatusCode.ERROR, message: attempt.error.message });
+  }
+  span.end(attempt.receivedAt);
   return attempt;
 }
 
@@ -215,13 +248,47 @@ async function attemptOnce(
  * retrying transient failures. Never throws: failures come back as a response
  * with `ok: false`, so a batch can report each provider independently.
  */
-export async function executeSearch(
+export function executeSearch(
   deps: SearchDeps,
   target: SearchTarget,
   baseParams: SearchParams,
-  context: SearchContext = {},
+  searchContext: SearchContext = {},
+): Promise<SearchResponse> {
+  return tracer().startActiveSpan(`search ${target.provider}`, async (span) => {
+    try {
+      const response = await runSearch(deps, target, baseParams, searchContext);
+      const cost = response.usage.costUsd ?? response.usage.estimatedCostUsd;
+      span.setAttributes({
+        "search.provider": response.provider,
+        "search.label": response.label,
+        "search.call_id": response.id,
+        "search.results": response.results.length,
+        "search.retries": response.retries.count,
+        "search.queued_ms": Math.round(response.timing.queuedMs),
+        "search.cost_source": response.usage.costSource,
+        ...(cost === undefined ? {} : { "search.cost_usd": cost }),
+        ...(searchContext.client ? { "search.client": searchContext.client } : {}),
+        ...(searchContext.batchId ? { "search.batch_id": searchContext.batchId } : {}),
+      });
+      if (response.error) {
+        span.setAttribute("error.type", response.error.type);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: response.error.message });
+      }
+      return response;
+    } finally {
+      span.end();
+    }
+  });
+}
+
+async function runSearch(
+  deps: SearchDeps,
+  target: SearchTarget,
+  baseParams: SearchParams,
+  searchContext: SearchContext,
 ): Promise<SearchResponse> {
   const id = randomUUID();
+  const active = context.active();
   const label = target.label ?? target.provider;
   const provider = providersById.get(target.provider);
   const options =
@@ -290,7 +357,10 @@ export async function executeSearch(
       let attempt: Attempt;
       try {
         attempt = await deps.limiter.run(provider.id, maxQueueMs, (queuedMs) =>
-          attemptOnce(deps, provider, apiKey, effective, timeoutMs, queuedMs),
+          attemptOnce(deps, provider, apiKey, effective, timeoutMs, queuedMs, {
+            parent: active,
+            index,
+          }),
         );
       } catch (error) {
         deps.budget.settle(provider.id, null);
@@ -343,6 +413,10 @@ export async function executeSearch(
       }
       deps.budget.settle(provider.id, response.ok ? response.usage : null);
       if (backoffMs === null) break;
+      trace.getSpan(active)?.addEvent("retry", {
+        "search.backoff_ms": backoffMs,
+        "error.type": errorType ?? "unknown",
+      });
       response.retries.count += 1;
       response.retries.backoffMs += backoffMs;
       deps.metrics.upstreamRetries.inc({ provider: provider.id, reason: errorType ?? "unknown" });
@@ -373,8 +447,9 @@ export async function executeSearch(
   deps.log[response.ok ? "info" : "warn"](
     {
       callId: id,
-      batchId: context.batchId ?? null,
-      client: context.client ?? null,
+      traceId: trace.getSpanContext(active)?.traceId,
+      batchId: searchContext.batchId ?? null,
+      client: searchContext.client ?? null,
       provider: response.provider,
       label,
       query: params.query,
@@ -399,9 +474,9 @@ export async function executeSearch(
         response,
         // Secrets a caller put in `options` reached the provider but must not be kept.
         params: options ? { ...params, options: redact(options) } : params,
-        batchId: context.batchId ?? null,
-        groupId: context.groupId ?? null,
-        client: context.client ?? null,
+        batchId: searchContext.batchId ?? null,
+        groupId: searchContext.groupId ?? null,
+        client: searchContext.client ?? null,
         keyFingerprint: apiKey ? keyFingerprint(apiKey) : null,
         raw,
       })
@@ -423,13 +498,13 @@ export async function searchWithFallbacks(
   deps: SearchDeps,
   chain: string[],
   params: SearchParams,
-  context: SearchContext = {},
+  searchContext: SearchContext = {},
 ): Promise<SearchResponse> {
   const groupId = chain.length > 1 ? randomUUID() : null;
   const tried: SearchResponse["fallback"]["tried"] = [];
   let response: SearchResponse | undefined;
   for (const provider of chain) {
-    response = await executeSearch(deps, { provider }, params, { ...context, groupId });
+    response = await executeSearch(deps, { provider }, params, { ...searchContext, groupId });
     if (response.ok || !response.error) break;
     tried.push({ provider, callId: response.id, error: response.error });
   }

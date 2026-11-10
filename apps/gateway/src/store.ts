@@ -28,6 +28,14 @@ export interface ProviderSpend {
   month: Spend;
 }
 
+export interface ProviderOutcome {
+  provider: string;
+  ok: boolean;
+  latencyMs: number;
+  receivedAt: string;
+  error: { type: string; message: string } | null;
+}
+
 export interface BalanceSnapshot extends Balance {
   provider: string;
   keyFingerprint: string;
@@ -45,6 +53,8 @@ export interface Store {
   stats(from: Date, to: Date, bucket: "hour" | "day"): Promise<StatsResponse["points"]>;
   /** Billed calls, dollars and credits per provider since the start of the UTC day and month. */
   spendSince(dayStart: Date, monthStart: Date): Promise<ProviderSpend[]>;
+  /** The latest calls per provider that say something about it, oldest first. */
+  recentOutcomes(perProvider: number): Promise<ProviderOutcome[]>;
   /** Apply retention: delete old calls and snapshots, drop old raw bodies. 0 days keeps them. */
   cleanup(retention: {
     callDays: number;
@@ -398,6 +408,36 @@ export function createPostgresStore(
         byProvider.set(row.provider, entry);
       }
       return [...byProvider.values()];
+    },
+
+    async recentOutcomes(perProvider) {
+      const rows = await sql<
+        {
+          provider: string;
+          ok: boolean;
+          latency_ms: number;
+          received_at: Date;
+          error_type: string | null;
+          error_message: string | null;
+        }[]
+      >`
+        SELECT provider, ok, latency_ms, received_at, error_type, error_message
+        FROM (
+          SELECT *, row_number() OVER (PARTITION BY provider ORDER BY sent_at DESC) AS recency
+          FROM gateway.search_calls
+          -- These failures happen before anything is sent, so they say nothing about the provider.
+          WHERE error_type IS NULL
+            OR error_type NOT IN ('not_configured', 'throttled', 'budget_exceeded')
+        ) calls
+        WHERE recency <= ${perProvider}
+        ORDER BY provider, sent_at`;
+      return rows.map((row) => ({
+        provider: row.provider,
+        ok: row.ok,
+        latencyMs: row.latency_ms,
+        receivedAt: row.received_at.toISOString(),
+        error: row.error_type ? { type: row.error_type, message: row.error_message ?? "" } : null,
+      }));
     },
 
     async cleanup({ callDays, rawDays }) {

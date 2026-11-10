@@ -1,12 +1,11 @@
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { providers } from "../providers/index.ts";
 import { searchParamsSchema, statusResponseSchema } from "../schema.ts";
 import { executeSearch } from "../search.ts";
 import { VERSION } from "../version.ts";
 
 export const statusRoutes: FastifyPluginAsyncZod = async (app) => {
-  const { env, store, health, limiter, budget, startedAt, searchDeps } = app.services;
+  const { env, store, providers, health, limiter, budget, startedAt, searchDeps } = app.services;
 
   app.get(
     "/v1/status",

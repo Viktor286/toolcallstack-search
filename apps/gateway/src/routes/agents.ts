@@ -9,7 +9,7 @@ import {
   toolDefinitions,
   type SchemaName,
 } from "../agent-docs.ts";
-import { providers, providersById } from "../providers/index.ts";
+import { providersById } from "../providers/index.ts";
 import { describeProvider } from "./providers.ts";
 
 const MARKDOWN = "text/markdown; charset=utf-8";
@@ -22,7 +22,8 @@ const base = (request: FastifyRequest) => `${request.protocol}://${request.host}
  * key, so an agent can learn the API before it is given one.
  */
 export const agentRoutes: FastifyPluginAsyncZod = async (app) => {
-  const all = () => providers.map((provider) => describeProvider(provider, app.services));
+  const all = () =>
+    app.services.providers.map((provider) => describeProvider(provider, app.services));
   const hidden = { schema: { hide: true } };
 
   app.get("/llms.txt", hidden, async (request, reply) =>
@@ -61,7 +62,7 @@ export const agentRoutes: FastifyPluginAsyncZod = async (app) => {
     { schema: { hide: true, params: z.object({ file: z.string() }) } },
     async (request, reply) => {
       const provider = providersById.get(request.params.file.replace(/\.md$/, ""));
-      if (!provider) {
+      if (!provider || !app.services.providers.includes(provider)) {
         return reply.code(404).send({ error: { type: "not_found", message: "no such provider" } });
       }
       return reply.type(MARKDOWN).send(providerMarkdown(describeProvider(provider, app.services)));

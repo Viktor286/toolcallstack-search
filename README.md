@@ -17,7 +17,17 @@ cost. A dashboard shows all of it.
 
 ## Quick start
 
-Requires Node 24 and pnpm. Postgres is optional; it enables the call log, balance snapshots,
+Try it without installing anything or signing up anywhere:
+
+```sh
+docker run --rm -p 4310:4310 ghcr.io/viktor286/toolcallstack-search
+```
+
+Then open http://localhost:4310/ui/playground. With no provider key the gateway starts in
+[demo mode](#demo-mode); pass keys with `-e BRAVE_API_KEY=...` (or `--env-file .env`) to search the
+real web.
+
+From source: requires Node 24 and pnpm. Postgres is optional; it enables the call log, balance snapshots,
 `/v1/calls` and `/v1/usage`.
 
 ```sh
@@ -35,6 +45,26 @@ curl -s localhost:4310/v1/search -H 'content-type: application/json' \
 
 With Docker (or OrbStack): `docker compose up --build` starts Postgres and the gateway, with a
 container health check on `/health`. Provider keys are read from `.env` when it exists.
+
+### Demo mode
+
+While no provider has an API key, the gateway offers two built-in providers, `demo-a` and `demo-b`.
+They answer with results the gateway generates itself: nothing is sent anywhere and nothing is
+billed, and every link points at a reserved `example.*` host. They go through the same pipeline as
+a real provider, so the API, call log, metrics, dashboard and playground all behave as usual.
+
+The two differ on purpose: `demo-a` is fast and honours every parameter, `demo-b` is slower,
+supports fewer parameters and leaves half its results undated. `options.latencyMs` sets the
+response time and `options.status` (for example `503`) makes a call fail, which shows what retries
+look like in the response:
+
+```sh
+curl -s localhost:4310/v1/search -H 'content-type: application/json' \
+  -d '{"provider":"demo-a","query":"anything","maxRetries":2,"options":{"status":503}}'
+```
+
+`DEMO_MODE` is `auto` by default (on only without real keys); `true` keeps the demo providers
+beside real ones and `false` removes them.
 
 ## API
 
@@ -183,7 +213,8 @@ it and retrying. Each provider can have `rpm` (requests started in any rolling m
 `concurrency` (requests in flight). Calls over a limit wait in a FIFO queue; the wait is reported as
 `timing.queuedMs`, and a call that cannot get a slot within `maxQueueMs` fails as `throttled`.
 Built-in defaults are Tavily 100 rpm and fastCRW 120 rpm with 3 concurrent; set your plan's real
-limits with `PROVIDER_LIMITS`. Limits are held in memory, so they apply per gateway process.
+limits with `PROVIDER_LIMITS`. Limits are held in memory, so they apply per gateway process unless
+[shared state](#running-several-instances) is on.
 
 **Inbound, per client.** `INBOUND_RATE_LIMIT_RPM` caps requests per gateway API key (or per IP when
 auth is off).
@@ -270,7 +301,7 @@ update their counters with a delay, so compare over windows of minutes or more.
   Docker image does.
 - `GET /ready` also checks the database.
 - `GET /v1/status` reports each provider as `healthy`, `degraded`, `down` or `unknown`, from the last
-  20 real calls since the process started: `down` after 3 failures in a row, `degraded` after a
+  20 real calls since the process started (or, with shared state, across all instances): `down` after 3 failures in a row, `degraded` after a
   failure or below 80% success. It also gives success rate, median latency, the last error and queue
   depth. `?probe=true` first sends one live one-result search to every configured provider, which
   spends provider credits.
@@ -341,7 +372,16 @@ Transport, timing, retries, limits, cost, metrics and storage are shared and liv
 
 ## Observability
 
-- **Logs**: structured JSON (pino), one `search call` line per call.
+- **Logs**: structured JSON (pino), one `search call` line per call, with the `traceId` when tracing
+  is on.
+- **Traces**: set `OTEL_EXPORTER_OTLP_ENDPOINT` (for example `http://localhost:4318`) and the gateway
+  exports OpenTelemetry traces over OTLP/HTTP; unset, tracing is off. An incoming `traceparent`
+  header is continued, so a search shows up inside the caller's own trace. Each call is a
+  `search <provider>` span (results, retries, queue wait, cost, error type) with one
+  `upstream <provider>` child per attempt carrying the status and the DNS, connect, TLS, first-byte
+  and download times; retries are events on the search span. The query text is never put on a span.
+  The standard `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_SDK_DISABLED` apply. To
+  look at traces locally: `docker run -p 16686:16686 -p 4318:4318 jaegertracing/jaeger`.
 - **Metrics** at `/metrics`:
   - `toolcallstack_search_upstream_calls_total{provider,outcome}`, `toolcallstack_search_upstream_retries_total{provider,reason}`
   - `toolcallstack_search_upstream_duration_seconds`, `toolcallstack_search_upstream_ttfb_seconds`, `toolcallstack_search_upstream_results`
@@ -357,6 +397,21 @@ Transport, timing, retries, limits, cost, metrics and storage are shared and liv
 - **Load shedding**: while the event loop lags by more than `MAX_EVENT_LOOP_DELAY_MS` the gateway
   answers 503, because timings taken then would be skewed.
 
+## Running several instances
+
+One instance keeps its rate limits, budgets and provider health in memory. To run more than one
+behind a load balancer, set `SHARED_STATE=true` on all of them, with the same `DATABASE_URL`:
+
+- **Outbound rate limits** are counted in Postgres, so `rpm` and `concurrency` hold for all
+  instances together. A waiting call polls for a slot, so order between instances is not strictly
+  first-come, and each upstream request costs one extra database round trip.
+- **Budgets and provider health** are reloaded from the shared call log every
+  `SHARED_STATE_SYNC_SECONDS`. A budget can therefore be overshot by what the other instances send
+  within that interval.
+- **Inbound limits** (`INBOUND_RATE_LIMIT_RPM`) and the queue-depth metric stay per instance.
+
+The MCP endpoint is stateless and the call log is shared already, so nothing else needs care.
+
 ## Configuration
 
 | Variable                        | Default           | Meaning                                                                      |
@@ -365,6 +420,10 @@ Transport, timing, retries, limits, cost, metrics and storage are shared and liv
 | `GATEWAY_API_KEYS`              | empty             | Comma-separated bearer tokens, optionally `name:token`. Empty disables auth. |
 | `DATABASE_URL`                  | unset             | Postgres. Migrations run at start.                                           |
 | `STORE_RAW`                     | `false`           | Store raw upstream bodies in the call log.                                   |
+| `DEMO_MODE`                     | `auto`            | Built-in demo providers: `auto` (only without real keys), `true`, `false`.   |
+| `SHARED_STATE`                  | `false`           | Share limits, budgets and health between instances. Needs `DATABASE_URL`.    |
+| `SHARED_STATE_SYNC_SECONDS`     | `10`              | How often budgets and health are reloaded from the call log.                 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`   | unset             | OTLP/HTTP endpoint for traces. Unset turns tracing off.                      |
 | `DEFAULT_TIMEOUT_MS`            | `30000`           | Per-attempt timeout when the request sets none.                              |
 | `MAX_RETRIES`                   | `5`               | Retries per call when the request sets none.                                 |
 | `RETRY_BASE_MS`, `RETRY_MAX_MS` | `500`, `8000`     | First backoff step and the cap on any single wait.                           |

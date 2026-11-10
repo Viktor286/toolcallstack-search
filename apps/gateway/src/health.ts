@@ -17,8 +17,9 @@ interface State {
 }
 
 /**
- * Health of each provider as seen through real traffic since the process
- * started: the outcome of the most recent calls, held in memory.
+ * Health of each provider as seen through real traffic: the outcome of the
+ * most recent calls, held in memory since the process started, or reloaded
+ * from the call log when instances share state.
  */
 export class HealthTracker {
   readonly #states = new Map<string, State>();
@@ -55,6 +56,27 @@ export class HealthTracker {
       };
     }
     this.#states.set(response.provider, state);
+  }
+
+  /** Set a provider's recent outcomes, oldest first, to what the call log says. */
+  replace(
+    provider: string,
+    outcomes: {
+      ok: boolean;
+      latencyMs: number;
+      receivedAt: string;
+      error: { type: string; message: string } | null;
+    }[],
+  ): void {
+    const recent = outcomes.slice(-WINDOW);
+    const lastOk = recent.findLast((outcome) => outcome.ok);
+    const lastFailed = recent.findLast((outcome) => !outcome.ok && outcome.error);
+    this.#states.set(provider, {
+      samples: recent.map(({ ok, latencyMs }) => ({ ok, latencyMs })),
+      consecutiveFailures: recent.length - 1 - recent.findLastIndex((outcome) => outcome.ok),
+      lastOkAt: lastOk?.receivedAt ?? null,
+      lastError: lastFailed?.error ? { ...lastFailed.error, at: lastFailed.receivedAt } : null,
+    });
   }
 
   snapshot(provider: string) {
