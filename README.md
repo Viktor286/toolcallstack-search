@@ -9,6 +9,11 @@ It is built for consumers that care about measurement as much as results. Every 
 its time went (queueing, DNS, connect, TLS, first byte, download), every retry it took, and what it
 cost. A dashboard shows all of it.
 
+![toolcallstack-search-overview.png](apps/dashboard/img/toolcallstack-search-overview.png)
+
+![toolcallstack-search-playground-01.png](apps/dashboard/img/toolcallstack-search-playground-01.png)
+
+![toolcallstack-search-calls-02.png](apps/dashboard/img/toolcallstack-search-calls-02.png)
 ## Quick start
 
 Requires Node 24 and pnpm. Postgres is optional; it enables the call log, balance snapshots,
