@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "ignorePatterns": [
+    "**/test/fixtures/**",
+    "pnpm-lock.yaml",
+    "apps/dashboard/src/components/ui/**",
+    "apps/dashboard/src/lib/utils.ts"
+  ]
+}

@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: toolcallstack_search
+      POSTGRES_PASSWORD: toolcallstack_search
+      POSTGRES_DB: toolcallstack_search
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toolcallstack_search"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://toolcallstack_search:toolcallstack_search@postgres:5432/toolcallstack_search
+    ports:
+      - "4310:4310"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

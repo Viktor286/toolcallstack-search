@@ -1,0 +1,35 @@
+{
+  "name": "toolcallstack-search",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Unified API gateway for web search providers",
+  "homepage": "https://github.com/Viktor286/toolcallstack-search#readme",
+  "bugs": "https://github.com/Viktor286/toolcallstack-search/issues",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Viktor286/toolcallstack-search.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @toolcallstack/search-gateway --filter @toolcallstack/search-dashboard dev",
+    "start": "pnpm --filter @toolcallstack/search-gateway start",
+    "build": "pnpm --filter @toolcallstack/search-dashboard build",
+    "smoke": "pnpm --filter @toolcallstack/search-gateway smoke",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "oxlint",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "check": "pnpm lint && pnpm fmt:check && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.78.0",
+    "oxlint": "^1.93.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@10.5.2"
+}
