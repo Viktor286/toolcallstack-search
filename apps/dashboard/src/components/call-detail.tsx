@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { PhaseBar } from "@/components/charts/phase-bar";
+import { CodeBlock } from "@/components/json-view";
 import { ProviderName } from "@/components/provider-name";
+import { ResultList } from "@/components/result-list";
 import { StatusLabel } from "@/components/status";
 import { Separator } from "@/components/ui/separator";
 import { api, type SearchResponse } from "@/lib/api";
@@ -12,35 +14,6 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="text-sm font-medium tabular-nums">{children}</dd>
     </div>
-  );
-}
-
-export function ResultList({ results }: { results: SearchResponse["results"] }) {
-  if (results.length === 0) return <p className="text-sm text-muted-foreground">No results.</p>;
-  return (
-    <ol className="space-y-3">
-      {results.map((result) => (
-        <li key={`${result.position}-${result.url}`} className="text-sm">
-          <a
-            href={result.url}
-            target="_blank"
-            rel="noreferrer"
-            className="font-medium underline-offset-4 hover:underline"
-          >
-            {result.position}. {result.title || "(untitled)"}
-          </a>
-          <div className="truncate text-xs text-muted-foreground">{result.url}</div>
-          <div className="text-xs text-muted-foreground">
-            {result.publishedAt
-              ? `Published ${dateTime(result.publishedAt)}${result.publishedPrecision === "datetime" ? "" : ` (${result.publishedPrecision} precision)`}`
-              : "No publish date"}
-          </div>
-          {result.snippet && (
-            <p className="mt-1 line-clamp-3 text-muted-foreground">{result.snippet}</p>
-          )}
-        </li>
-      ))}
-    </ol>
   );
 }
 
@@ -140,9 +113,7 @@ export function CallDetail({ call }: { call: SearchResponse }) {
       {raw !== undefined && (
         <section>
           <h3 className="mb-2 text-sm font-medium">Raw upstream response</h3>
-          <pre className="max-h-96 overflow-auto rounded-md border p-3 text-xs">
-            {JSON.stringify(raw, null, 2)}
-          </pre>
+          <CodeBlock value={raw} className="max-h-96" />
         </section>
       )}
       <p className="font-mono text-xs text-muted-foreground">{call.id}</p>

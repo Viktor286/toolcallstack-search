@@ -181,3 +181,16 @@
   --phase-4: #86b6ef;
   --phase-5: #cde2fb;
 }
+
+/* JSON shown as code: strings, numbers and literals, readable on the card surface in both modes. */
+:root {
+  --code-string: #0b6e4f;
+  --code-number: #1c5cab;
+  --code-literal: #a5450f;
+}
+
+.dark {
+  --code-string: #6fd3a8;
+  --code-number: #86b6ef;
+  --code-literal: #f0a47a;
+}
