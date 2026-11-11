@@ -254,7 +254,8 @@ export function ProviderCard({ provider, info, balance, activity, store, now }: 
                 {activity.failures > 0 && ` · ${compact(activity.failures)} failed`}
               </Row>
               <Row label="Cost, 24 h" icon={CircleDollarSign} help="cost24h">
-                {usd(activity.cost)}
+                {/* No calls cost nothing; "unknown" is for calls without a price. */}
+                {usd(activity.calls === 0 ? 0 : activity.cost)}
               </Row>
             </>
           )}

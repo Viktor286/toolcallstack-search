@@ -118,7 +118,15 @@ export function OverviewPage() {
       balances.set(row.provider, row.balance);
     }
   }
-  const activity = stats.data ? activityByProvider(stats.data.points, now) : undefined;
+  // Every configured provider gets a series, so one without calls today still shows its chart.
+  const activity = stats.data
+    ? activityByProvider(
+        stats.data.points,
+        now,
+        24,
+        gateway.providers.filter((provider) => provider.configured).map((provider) => provider.id),
+      )
+    : undefined;
   // Which providers get a card depends on their history; wait for it rather than reshuffle.
   const historyPending = store === "ok" && stats.isPending;
   const rows = byAttention(gateway.providers, (id) => activity?.get(id)?.calls ?? 0);

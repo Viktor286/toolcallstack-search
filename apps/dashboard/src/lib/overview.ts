@@ -29,32 +29,37 @@ export interface ProviderActivity {
 /**
  * Hourly stats folded into one summary and one 24-hour series per provider.
  * Points outside the series are left out of the totals too, so the figures
- * always add up to what the bars show.
+ * always add up to what the bars show. Providers named in `include` get an
+ * empty series even without calls in the window, so a quiet day still draws
+ * its (empty) chart instead of dropping it.
  */
 export function activityByProvider(
   points: Point[],
   now: number,
   hours = 24,
+  include: string[] = [],
 ): Map<string, ProviderActivity> {
   const last = Math.floor(now / HOUR) * HOUR;
   const starts = Array.from({ length: hours }, (_, index) => last - (hours - 1 - index) * HOUR);
   const result = new Map<string, ProviderActivity>();
+  const empty = (): ProviderActivity => ({
+    calls: 0,
+    failures: 0,
+    cost: null,
+    p95: null,
+    hourly: starts.map((start) => ({
+      start: new Date(start).toISOString(),
+      calls: 0,
+      failures: 0,
+    })),
+  });
+  for (const id of include) result.set(id, empty());
   for (const point of points) {
     const position = starts.indexOf(Date.parse(point.bucket));
     if (position === -1) continue;
     let activity = result.get(point.provider);
     if (!activity) {
-      activity = {
-        calls: 0,
-        failures: 0,
-        cost: null,
-        p95: null,
-        hourly: starts.map((start) => ({
-          start: new Date(start).toISOString(),
-          calls: 0,
-          failures: 0,
-        })),
-      };
+      activity = empty();
       result.set(point.provider, activity);
     }
     activity.calls += point.calls;

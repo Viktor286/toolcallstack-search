@@ -51,6 +51,13 @@ const point = (bucket: string, over = {}) => ({
 describe("activityByProvider", () => {
   const now = Date.parse("2026-11-10T12:30:00Z");
 
+  it("gives an included provider without calls an empty 24-hour series", () => {
+    const quiet = activityByProvider([], now, 24, ["exa"]).get("exa")!;
+    expect(quiet).toMatchObject({ calls: 0, failures: 0, cost: null, p95: null });
+    expect(quiet.hourly).toHaveLength(24);
+    expect(quiet.hourly.every((slot) => slot.calls === 0)).toBe(true);
+  });
+
   it("totals the 24-slot series and leaves out hours before it", () => {
     const result = activityByProvider(
       [
