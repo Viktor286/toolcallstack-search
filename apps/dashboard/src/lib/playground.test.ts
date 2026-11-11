@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { SearchResponse } from "./api";
 import {
   EMPTY_FORM,
+  HISTORY_SIZE,
+  addToHistory,
   buildRequest,
+  cappedProviders,
+  findInHistory,
+  parseHistory,
+  resultChoices,
+  withoutCache,
+  type HistoryEntry,
   curlCommand,
   formFromParams,
   formToParams,
@@ -184,5 +192,97 @@ describe("cache in the playground", () => {
     );
     expect(formFromParams(formToParams(cached)).cacheTtlSeconds).toBe("60");
     expect(hasAdvanced(cached)).toBe(true);
+  });
+});
+
+describe("shared links", () => {
+  it("carry each selected provider's options, compacted when they are valid JSON", () => {
+    const params = formToParams({
+      ...form,
+      providers: ["brave", "exa"],
+      options: { brave: '{ "safesearch": "off" }', exa: "{oops", you: '{"x":1}' },
+    });
+    expect(params.get("o.brave")).toBe('{"safesearch":"off"}');
+    expect(params.get("o.exa")).toBe("{oops");
+    expect(params.has("o.you")).toBe(false);
+    expect(formFromParams(params).options).toEqual({
+      brave: '{"safesearch":"off"}',
+      exa: "{oops",
+    });
+  });
+});
+
+describe("result counts", () => {
+  it("offer counts up to the largest chosen provider's limit, keeping the current one", () => {
+    expect(resultChoices([20, 100], 5)).toEqual([3, 5, 10, 20, 50, 100]);
+    expect(resultChoices([20], 7)).toEqual([3, 5, 7, 10, 20]);
+    expect(resultChoices([], 5)).toEqual([3, 5, 10, 20]);
+  });
+
+  it("name the providers that will be capped", () => {
+    const providers = [
+      { id: "brave", maxResults: 20 },
+      { id: "exa", maxResults: 100 },
+    ];
+    expect(cappedProviders(providers, 50).map((provider) => provider.id)).toEqual(["brave"]);
+    expect(cappedProviders(providers, 20)).toEqual([]);
+  });
+});
+
+describe("withoutCache", () => {
+  it("asks for a fresh answer without changing the original request", () => {
+    const request = buildRequest(form);
+    expect(withoutCache(request).body.cacheTtlSeconds).toBe(0);
+    expect(request.body.cacheTtlSeconds).toBeUndefined();
+  });
+});
+
+function entry(query: string, id = query): HistoryEntry {
+  const entryForm = { ...form, query };
+  return {
+    id,
+    savedAt: "2026-11-10T12:00:00.000Z",
+    form: entryForm,
+    request: buildRequest(entryForm),
+    body: { ...response("brave", ["https://a.com"]), raw: { big: true } },
+  };
+}
+
+describe("history", () => {
+  it("keeps the newest runs first, replaces a repeat of the same set-up and drops raw bodies", () => {
+    let entries: HistoryEntry[] = [];
+    for (let index = 0; index < HISTORY_SIZE + 2; index++) {
+      entries = addToHistory(entries, entry(`q${index}`));
+    }
+    expect(entries).toHaveLength(HISTORY_SIZE);
+    expect(entries[0]!.form.query).toBe(`q${HISTORY_SIZE + 1}`);
+    expect("raw" in entries[0]!.body).toBe(false);
+
+    entries = addToHistory(entries, entry("q5", "again"));
+    expect(entries[0]!.id).toBe("again");
+    expect(entries.filter((item) => item.form.query === "q5")).toHaveLength(1);
+  });
+
+  it("drops stored entries that are not runs and fills fields older entries lack", () => {
+    const { options: _options, ...oldForm } = entry("old").form;
+    const stored = JSON.stringify([
+      { ...entry("old"), form: oldForm },
+      { id: "broken", form: null },
+      "nonsense",
+    ]);
+    const entries = parseHistory(stored);
+    expect(entries.map((item) => item.id)).toEqual(["old"]);
+    expect(entries[0]!.form.options).toEqual({});
+    expect(formToParams(entries[0]!.form).get("q")).toBe("old");
+    expect(parseHistory("{not json")).toEqual([]);
+    expect(parseHistory(null)).toEqual([]);
+  });
+
+  it("finds the run for the set-up in the address bar", () => {
+    const entries = addToHistory([], entry("fed rates"));
+    expect(findInHistory(entries, formFromParams(formToParams(entries[0]!.form)))?.id).toBe(
+      "fed rates",
+    );
+    expect(findInHistory(entries, { ...form, query: "other" })).toBeUndefined();
   });
 });

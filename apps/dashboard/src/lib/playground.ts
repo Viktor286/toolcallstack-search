@@ -1,5 +1,5 @@
 import { canonicalUrl } from "../../../gateway/src/canonical-url.ts";
-import type { ProviderInfo, SearchResponse } from "@/lib/api";
+import type { BatchResponse, ProviderInfo, SearchResponse } from "@/lib/api";
 
 /** Everything the playground form holds; strings stay as typed until a request is built. */
 export interface PlaygroundForm {
@@ -278,8 +278,17 @@ export function formToParams(form: PlaygroundForm): URLSearchParams {
   if (form.excludeDomains.trim()) params.set("exclude", domains(form.excludeDomains).join(","));
   if (form.includeRaw) params.set("raw", "1");
   if (cacheSeconds(form.cacheTtlSeconds) !== null) params.set("cache", form.cacheTtlSeconds.trim());
+  // Options travel as compact JSON per selected provider, so a copied link keeps them too.
+  for (const id of form.providers) {
+    const text = form.options[id]?.trim();
+    if (!text) continue;
+    const { value } = parseOptions(text);
+    params.set(`${OPTION_PARAM}${id}`, value ? JSON.stringify(value) : text);
+  }
   return params;
 }
+
+const OPTION_PARAM = "o.";
 
 export function formFromParams(params: URLSearchParams): PlaygroundForm {
   const count = Number(params.get("n"));
@@ -297,5 +306,149 @@ export function formFromParams(params: URLSearchParams): PlaygroundForm {
     excludeDomains: params.get("exclude") ?? "",
     includeRaw: params.get("raw") === "1",
     cacheTtlSeconds: params.get("cache") ?? "",
+    options: Object.fromEntries(
+      [...params]
+        .filter(([name, text]) => name.startsWith(OPTION_PARAM) && text.trim() !== "")
+        .map(([name, text]) => [name.slice(OPTION_PARAM.length), text]),
+    ),
   };
+}
+
+const RESULT_CHOICES = [3, 5, 10, 20, 50, 100];
+
+/** Result counts worth offering: up to the largest limit among the chosen providers. */
+export function resultChoices(limits: number[], current: number): number[] {
+  const limit = limits.length > 0 ? Math.max(...limits) : 20;
+  return [...new Set([...RESULT_CHOICES.filter((count) => count <= limit), current])].toSorted(
+    (a, b) => a - b,
+  );
+}
+
+/** Chosen providers that return fewer results than asked; the gateway caps them and warns. */
+export function cappedProviders<P extends Pick<ProviderInfo, "maxResults">>(
+  providers: P[],
+  maxResults: number,
+): P[] {
+  return providers.filter((provider) => provider.maxResults < maxResults);
+}
+
+/** A copy of the request that skips the cache, to compare a fresh answer with a reused one. */
+export function withoutCache(request: PlaygroundRequest): PlaygroundRequest {
+  return { ...request, body: { ...request.body, cacheTtlSeconds: 0 } };
+}
+
+export function responsesOf(body: SearchResponse | BatchResponse): SearchResponse[] {
+  return "responses" in body ? body.responses : [body];
+}
+
+/** One finished run as the history keeps it. */
+export interface HistoryEntry {
+  id: string;
+  savedAt: string;
+  form: PlaygroundForm;
+  request: PlaygroundRequest;
+  body: SearchResponse | BatchResponse;
+}
+
+const HISTORY_KEY = "toolcallstack-search.playgroundHistory";
+export const HISTORY_SIZE = 10;
+
+function stripRaw({ raw: _raw, ...response }: SearchResponse): SearchResponse {
+  return response;
+}
+
+/** Raw upstream bodies can be large, so the history keeps the unified response only. */
+function withoutRaw(body: SearchResponse | BatchResponse): SearchResponse | BatchResponse {
+  return "responses" in body
+    ? { ...body, responses: body.responses.map(stripRaw) }
+    : stripRaw(body);
+}
+
+/** Newest first; a run with the same set-up as an older one replaces it. */
+export function addToHistory(entries: HistoryEntry[], entry: HistoryEntry): HistoryEntry[] {
+  const key = formToParams(entry.form).toString();
+  return [
+    { ...entry, body: withoutRaw(entry.body) },
+    ...entries.filter((old) => formToParams(old.form).toString() !== key),
+  ].slice(0, HISTORY_SIZE);
+}
+
+/** The saved run for this exact set-up, so a reload shows what the address bar describes. */
+export function findInHistory(
+  entries: HistoryEntry[],
+  form: PlaygroundForm,
+): HistoryEntry | undefined {
+  const key = formToParams(form).toString();
+  return entries.find((entry) => formToParams(entry.form).toString() === key);
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Stored history as the page can use it. Entries that are not runs are dropped, and forms saved
+ * before a field existed get its default, so an old or edited entry cannot break the page.
+ */
+export function parseHistory(text: string | null): HistoryEntry[] {
+  let saved: unknown;
+  try {
+    saved = JSON.parse(text ?? "[]");
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(saved)) return [];
+  return saved
+    .filter(
+      (entry): entry is HistoryEntry =>
+        isObject(entry) &&
+        typeof entry.id === "string" &&
+        typeof entry.savedAt === "string" &&
+        isObject(entry.form) &&
+        Array.isArray(entry.form.providers) &&
+        typeof entry.form.query === "string" &&
+        isObject(entry.request) &&
+        isObject(entry.request.body) &&
+        isObject(entry.body) &&
+        (Array.isArray(entry.body.responses) || Array.isArray(entry.body.results)),
+    )
+    .map((entry) => ({
+      ...entry,
+      form: {
+        ...EMPTY_FORM,
+        ...entry.form,
+        options: isObject(entry.form.options) ? entry.form.options : {},
+      },
+    }))
+    .slice(0, HISTORY_SIZE);
+}
+
+export function loadHistory(): HistoryEntry[] {
+  try {
+    return parseHistory(localStorage.getItem(HISTORY_KEY));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Keeps as many of the newest runs as the browser lets it store; history is a convenience.
+ * When not even the newest run fits, what was stored before is left as it was.
+ */
+export function saveHistory(entries: HistoryEntry[]): void {
+  try {
+    if (entries.length === 0) {
+      localStorage.removeItem(HISTORY_KEY);
+      return;
+    }
+  } catch {
+    return;
+  }
+  for (let count = entries.length; count >= 1; count--) {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, count)));
+      return;
+    } catch {
+      // Over quota or storage refused: try again with fewer runs.
+    }
+  }
 }

@@ -344,7 +344,7 @@ update their counters with a delay, so compare over windows of minutes or more.
 | Overview   | Gateway status, a 24-hour summary and, per provider, health, latency, balance, budget.                                                                                |
 | Calls      | The call log, filtered by provider, outcome or error type, time, query text, label or client; a call opens to its timing, attempts and results, and has its own link. |
 | Usage      | Calls over time, typical latency and cost per provider, and the per-key cost check.                                                                                   |
-| Playground | Run a query against one provider or several at once and compare.                                                                                                      |
+| Playground | Run a query against one provider or several at once and compare; the last 10 runs are kept in this browser.                                                           |
 
 Every figure explains itself on hover: what it means, how it is computed and which field it comes
 from. On the Overview, a provider's hourly bars open the calls of that hour.

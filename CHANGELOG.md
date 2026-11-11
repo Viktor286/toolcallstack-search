@@ -24,6 +24,10 @@ the version is below 1.0 a minor release may change the API.
 - Dashboard: every figure explains on hover what it means and how it is computed. The Calls page
   filters by error type, time, query text and label, keeps its filters in the address, opens each
   call at its own link and can refresh itself; an Overview bar opens that hour's calls.
+- Playground: the last 10 runs are kept in the browser and come back after a reload or from "Recent
+  runs"; a search can be cancelled and shows how long it has waited; a cached answer can be fetched
+  again fresh; copied links keep per-provider options; result counts go up to the chosen providers'
+  limits, with a note when one returns fewer; the examples stay available after typing a query.
 - `minRemaining` budgets work without a database, and the gateway warns when one cannot apply.
 - When shared state cannot reach Postgres, calls fall back to each instance's own rate limits
   instead of failing.

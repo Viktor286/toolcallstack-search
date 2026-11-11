@@ -49,7 +49,7 @@ export class ApiError extends Error {
  * Call the gateway. Search endpoints answer failures with a normal response
  * body (`ok: false`), so only responses without one become an ApiError.
  */
-export async function api<T>(path: string, body?: unknown): Promise<T> {
+export async function api<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const key = getApiKey();
   const response = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
@@ -58,8 +58,11 @@ export async function api<T>(path: string, body?: unknown): Promise<T> {
       ...(key ? { authorization: `Bearer ${key}` } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   const data: unknown = await response.json().catch(() => null);
+  // Cancelled while the body was read: the null above is not an answer.
+  signal?.throwIfAborted();
   if (response.ok) return data as T;
   if (data && typeof data === "object" && "timing" in data) return data as T;
   const error = (data as { error?: { type?: string; message?: string } } | null)?.error;

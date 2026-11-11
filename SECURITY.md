@@ -21,4 +21,6 @@ Things worth knowing when you deploy the gateway:
   The process log also records each call's query text, so treat it like the call log.
 - With caching on, answers are held in memory and served to any client that sends an identical
   request to the same provider within the time it allows.
-- The dashboard keeps the gateway API key in the browser's local storage.
+- The dashboard keeps the gateway API key in the browser's local storage, and the Playground keeps
+  its last 10 runs there (queries and unified results, without raw upstream bodies). "Clear
+  history" in the Playground removes them.

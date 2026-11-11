@@ -3,12 +3,15 @@ import {
   Check,
   ChevronDown,
   FileJson,
+  History,
   Info,
+  RefreshCw,
   Search,
   SlidersHorizontal,
   TriangleAlert,
+  X,
 } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import { CodeBlock, CopyButton, DownloadButton } from "@/components/json-view";
 import { Comparison } from "@/components/playground/comparison";
@@ -35,19 +38,30 @@ import {
   type ProviderInfo,
   type SearchResponse,
 } from "@/lib/api";
+import { ago, ms } from "@/lib/format";
 import {
+  EMPTY_FORM,
+  addToHistory,
   buildRequest,
+  cappedProviders,
   curlCommand,
+  findInHistory,
   formFromParams,
   formToParams,
   hasAdvanced,
+  loadHistory,
   normalizeUrl,
   parseOptions,
+  resultChoices,
+  responsesOf,
+  saveHistory,
   sharedResults,
   snapshot,
   snapshotName,
   summarize,
   unsupportedParams,
+  withoutCache,
+  type HistoryEntry,
   type PlaygroundForm,
   type PlaygroundRequest,
 } from "@/lib/playground";
@@ -72,10 +86,43 @@ const EXAMPLES: { label: string; patch: Partial<PlaygroundForm> }[] = [
 ];
 
 interface Run {
+  /** The form as it was when the run was sent; the form on screen may have changed since. */
+  form: PlaygroundForm;
   request: PlaygroundRequest;
   /** The response body exactly as the gateway returned it. */
-  body: unknown;
+  body: SearchResponse | BatchResponse;
   responses: SearchResponse[];
+  /** When the run comes from the saved history rather than the search just made. */
+  savedAt?: string;
+}
+
+function fromHistory(entry: HistoryEntry): Run {
+  return {
+    form: entry.form,
+    request: entry.request,
+    body: entry.body,
+    responses: responsesOf(entry.body),
+    savedAt: entry.savedAt,
+  };
+}
+
+function isAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+/** Time since a search was sent, ticking while it is waited on. */
+function Elapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(timer);
+  }, []);
+  return <span className="tabular-nums">{ms(Math.max(0, now - since))}</span>;
+}
+
+function historyLabel(entry: HistoryEntry, names: Record<string, string>): string {
+  const providers = entry.form.providers.map((id) => names[id] ?? id).join(", ");
+  return `${entry.form.query} · ${providers} · ${ago(entry.savedAt)}`;
 }
 
 function priceLabel(pricing: ProviderInfo["pricing"]): string | null {
@@ -109,6 +156,13 @@ export function PlaygroundPage() {
   // A shared link that sets a hidden field opens the panel, so no filter applies unseen.
   const [advanced, setAdvanced] = useState(() => hasAdvanced(stored));
   const [view, setView] = useState("parsed");
+  const [history, setHistory] = useState(loadHistory);
+  // A reload shows the saved run for the set-up in the address bar, if there is one.
+  const [run, setRun] = useState<Run | null>(() => {
+    const entry = searchParams.size > 0 ? findInHistory(history, stored) : undefined;
+    return entry ? fromHistory(entry) : null;
+  });
+  const controller = useRef<AbortController | null>(null);
 
   // Until the user picks, the first configured provider is selected.
   const chosen = stored.providers.filter((id) => configured.some((p) => p.id === id));
@@ -128,9 +182,33 @@ export function PlaygroundPage() {
     form.query.trim() !== "" && selected.length > 0 && !Object.values(optionErrors).some(Boolean);
 
   const search = useMutation({
-    mutationFn: async (sent: PlaygroundRequest): Promise<Run> => {
-      const body = await api<SearchResponse | BatchResponse>(sent.path, sent.body);
-      return { request: sent, body, responses: "responses" in body ? body.responses : [body] };
+    mutationFn: async ({
+      request: sent,
+      form: sentForm,
+    }: {
+      request: PlaygroundRequest;
+      form: PlaygroundForm;
+    }): Promise<Run> => {
+      controller.current = new AbortController();
+      const body = await api<SearchResponse | BatchResponse>(
+        sent.path,
+        sent.body,
+        controller.current.signal,
+      );
+      return { form: sentForm, request: sent, body, responses: responsesOf(body) };
+    },
+    onSuccess: (result) => {
+      setRun(result);
+      // Read storage again, so runs made in another tab are kept too.
+      const next = addToHistory(loadHistory(), {
+        id: crypto.randomUUID(),
+        savedAt: new Date().toISOString(),
+        form: result.form,
+        request: result.request,
+        body: result.body,
+      });
+      saveHistory(next);
+      setHistory(next);
     },
     onSettled: () => {
       // New calls change the overview, the call list and usage.
@@ -144,7 +222,20 @@ export function PlaygroundPage() {
     event.preventDefault();
     if (!ready || search.isPending) return;
     setSearchParams(formToParams(form), { replace: true });
-    search.mutate(request);
+    search.mutate({ request, form });
+  };
+
+  const restore = (entry: HistoryEntry) => {
+    controller.current?.abort();
+    search.reset();
+    setStored(entry.form);
+    setAdvanced(hasAdvanced(entry.form));
+    setRun(fromHistory(entry));
+    setSearchParams(formToParams(entry.form), { replace: true });
+  };
+  const clearHistory = () => {
+    saveHistory([]);
+    setHistory([]);
   };
 
   const toggle = (id: string) =>
@@ -152,7 +243,8 @@ export function PlaygroundPage() {
       providers: selected.includes(id) ? selected.filter((p) => p !== id) : [...selected, id],
     });
 
-  const run = search.data;
+  const capped = cappedProviders(selectedInfo, form.maxResults);
+  const cached = run?.responses.some((response) => response.cache?.hit) ?? false;
   const shared = useMemo(() => sharedResults(run?.responses ?? []), [run]);
   const summaries = useMemo(
     () => (run?.responses ?? []).map((response) => summarize(response, shared)),
@@ -165,7 +257,35 @@ export function PlaygroundPage() {
 
   return (
     <>
-      <PageTitle title="Playground" />
+      <PageTitle title="Playground">
+        {history.length > 0 && (
+          <Select
+            value=""
+            onValueChange={(value) => {
+              if (value === "clear") clearHistory();
+              else {
+                const entry = history.find((item) => item.id === value);
+                if (entry) restore(entry);
+              }
+            }}
+          >
+            <SelectTrigger className="w-44" aria-label="Recent runs">
+              <History />
+              <SelectValue placeholder="Recent runs" />
+            </SelectTrigger>
+            <SelectContent position="popper" align="end">
+              {history.map((entry) => (
+                <SelectItem key={entry.id} value={entry.id} className="max-w-md">
+                  <span className="truncate">{historyLabel(entry, names)}</span>
+                </SelectItem>
+              ))}
+              <SelectItem value="clear" className="text-muted-foreground">
+                Clear history
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        )}
+      </PageTitle>
       <p className="-mt-3 mb-5 max-w-3xl text-sm text-muted-foreground">
         Send one query to any provider, or to several at the same instant, and compare what comes
         back: results, publish dates, where the time went and what it cost. The request on the right
@@ -205,27 +325,43 @@ export function PlaygroundPage() {
                   <Search />
                   {search.isPending ? "Searching…" : "Search"}
                 </Button>
+                {search.isPending && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    title="Stop waiting. The gateway still finishes the call, logs it and is billed for it."
+                    onClick={() => controller.current?.abort()}
+                  >
+                    <X />
+                    Cancel
+                  </Button>
+                )}
               </div>
 
-              {!form.query && (
-                <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="text-muted-foreground">Try:</span>
-                  {EXAMPLES.map((example) => (
-                    <Button
-                      key={example.label}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        patch(example.patch);
-                        if (example.patch.includeDomains) setAdvanced(true);
-                      }}
-                    >
-                      {example.label}
-                    </Button>
-                  ))}
-                </div>
-              )}
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="text-muted-foreground">Try:</span>
+                {EXAMPLES.map((example) => (
+                  <Button
+                    key={example.label}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      // An example sets up the fields it is about from scratch, keeping the providers.
+                      patch({
+                        topic: EMPTY_FORM.topic,
+                        freshness: EMPTY_FORM.freshness,
+                        maxResults: EMPTY_FORM.maxResults,
+                        includeDomains: "",
+                        ...example.patch,
+                      });
+                      if (example.patch.includeDomains) setAdvanced(true);
+                    }}
+                  >
+                    {example.label}
+                  </Button>
+                ))}
+              </div>
 
               <fieldset>
                 <legend className="mb-2 flex w-full items-baseline justify-between text-xs text-muted-foreground">
@@ -328,13 +464,14 @@ export function PlaygroundPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {[...new Set([3, 5, 10, 20, form.maxResults])]
-                        .toSorted((a, b) => a - b)
-                        .map((count) => (
-                          <SelectItem key={count} value={String(count)}>
-                            {count}
-                          </SelectItem>
-                        ))}
+                      {resultChoices(
+                        selectedInfo.map((provider) => provider.maxResults),
+                        form.maxResults,
+                      ).map((count) => (
+                        <SelectItem key={count} value={String(count)}>
+                          {count}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </Field>
@@ -479,6 +616,17 @@ export function PlaygroundPage() {
                   ))}
                 </ul>
               )}
+              {capped.length > 0 && (
+                <p className="flex gap-2 text-sm text-muted-foreground">
+                  <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  <span>
+                    {capped
+                      .map((provider) => `${provider.name} returns at most ${provider.maxResults}`)
+                      .join(", ")}
+                    ; the gateway caps the request and says so in the response.
+                  </span>
+                </p>
+              )}
               {selected.length > 1 && (
                 <p className="text-sm text-muted-foreground">
                   The query goes to {selected.length} providers at the same instant; each is billed.
@@ -521,13 +669,31 @@ export function PlaygroundPage() {
         </Card>
       </div>
 
-      {search.error && <QueryError error={search.error} />}
+      {search.error &&
+        (isAbort(search.error) ? (
+          <p className="mb-4 text-sm text-muted-foreground">
+            Cancelled. The gateway still finishes the call, so it appears under Calls once it does.
+          </p>
+        ) : (
+          <QueryError error={search.error} />
+        ))}
 
       {search.isPending && (
-        <div className={`grid gap-4 ${selected.length > 1 ? "lg:grid-cols-2" : ""}`}>
-          {selectedInfo.map((provider) => (
-            <ResponseSkeleton key={provider.id} id={provider.id} label={provider.name} />
-          ))}
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Waiting for{" "}
+            {search.variables.form.providers.length === 1
+              ? "1 provider"
+              : `${search.variables.form.providers.length} providers`}{" "}
+            · <Elapsed since={search.submittedAt} />
+          </p>
+          <div
+            className={`grid gap-4 ${search.variables.form.providers.length > 1 ? "lg:grid-cols-2" : ""}`}
+          >
+            {search.variables.form.providers.map((id) => (
+              <ResponseSkeleton key={id} id={id} label={names[id] ?? id} />
+            ))}
+          </div>
         </div>
       )}
 
@@ -545,9 +711,22 @@ export function PlaygroundPage() {
               </TabsList>
             </div>
             <div className="flex flex-wrap gap-2">
+              {cached && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  title="Send the same request with cacheTtlSeconds 0, so every provider is asked again"
+                  onClick={() =>
+                    search.mutate({ request: withoutCache(run.request), form: run.form })
+                  }
+                >
+                  <RefreshCw />
+                  Search again without cache
+                </Button>
+              )}
               <CopyButton
                 label="Copy link"
-                text={() => `${origin}${window.location.pathname}?${formToParams(form)}`}
+                text={() => `${origin}${window.location.pathname}?${formToParams(run.form)}`}
               />
               <DownloadButton
                 label="Export snapshot"
@@ -557,6 +736,13 @@ export function PlaygroundPage() {
             </div>
           </div>
 
+          {run.savedAt && (
+            <p className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+              <History className="size-4 shrink-0" aria-hidden />
+              Saved run from {ago(run.savedAt)}, kept in this browser
+              {run.request.body.includeRaw ? "; raw upstream bodies are not saved" : ""}.
+            </p>
+          )}
           <TabsContent value="parsed" className="space-y-4 pt-2">
             {run.responses.length > 1 && (
               <Card className="min-w-0">
