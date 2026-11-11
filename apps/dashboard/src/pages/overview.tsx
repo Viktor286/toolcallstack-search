@@ -200,6 +200,7 @@ export function OverviewPage() {
         <Tile
           icon={HeartPulse}
           label="Providers"
+          help="providersTile"
           value={withData > 0 ? `${counts.healthy} of ${withData} healthy` : "No calls yet"}
           note={
             [
@@ -214,21 +215,23 @@ export function OverviewPage() {
         />
         {activity && (
           <>
-            <Tile icon={Activity} label="Calls, 24 h" value={compact(calls)} />
+            <Tile icon={Activity} label="Calls, 24 h" help="calls24h" value={compact(calls)} />
             <Tile
               icon={TriangleAlert}
               label="Failed, 24 h"
+              help="failedShare"
               value={percent(failures, calls)}
               note={`${compact(failures)} of ${compact(calls)} calls`}
             />
             <Tile
               icon={CircleDollarSign}
               label="Cost, 24 h"
+              help="cost24h"
               value={usd(cost)}
               note={
                 unpriced.length > 0
                   ? `excludes ${unpriced.join(", ")} (no price set)`
-                  : "list price"
+                  : "reported, else list price"
               }
             />
           </>

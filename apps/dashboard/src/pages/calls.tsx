@@ -3,6 +3,7 @@ import { ChevronDown, RefreshCw, SearchX, User } from "lucide-react";
 import { useState } from "react";
 import { useSearchParams } from "react-router";
 import { CallDetail } from "@/components/call-detail";
+import { MetricHelp } from "@/components/metric-help";
 import { ProviderName } from "@/components/provider-name";
 import { PageTitle, QueryError } from "@/components/query-state";
 import { StatusLabel } from "@/components/status";
@@ -130,15 +131,27 @@ export function CallsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Sent</TableHead>
+                  <TableHead>
+                    <MetricHelp metric="sent">Sent</MetricHelp>
+                  </TableHead>
                   <TableHead>Provider</TableHead>
                   <TableHead>Query</TableHead>
                   <TableHead>Outcome</TableHead>
-                  <TableHead className="text-right">Results</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="text-right">Queued</TableHead>
-                  <TableHead className="text-right">Retries</TableHead>
-                  <TableHead className="text-right">Cost</TableHead>
+                  <TableHead className="text-right">
+                    <MetricHelp metric="results">Results</MetricHelp>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <MetricHelp metric="totalTime">Total</MetricHelp>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <MetricHelp metric="queued">Queued</MetricHelp>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <MetricHelp metric="retries">Retries</MetricHelp>
+                  </TableHead>
+                  <TableHead className="text-right">
+                    <MetricHelp metric="cost">Cost</MetricHelp>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

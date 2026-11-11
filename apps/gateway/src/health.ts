@@ -1,6 +1,11 @@
 import type { SearchResponse } from "./schema.ts";
 
-const WINDOW = 20;
+/** How many recent calls per provider health is judged on. */
+export const HEALTH_WINDOW = 20;
+/** Failures in a row that make a provider "down". */
+export const DOWN_AFTER = 3;
+/** Below this share of successes a provider is "degraded". */
+export const HEALTHY_SHARE = 0.8;
 
 export type ProviderStatus = "healthy" | "degraded" | "down" | "unknown";
 
@@ -43,7 +48,7 @@ export class HealthTracker {
       lastError: null,
     };
     state.samples.push({ ok: response.ok, latencyMs: response.timing.latencyMs });
-    if (state.samples.length > WINDOW) state.samples.shift();
+    if (state.samples.length > HEALTH_WINDOW) state.samples.shift();
     if (response.ok) {
       state.consecutiveFailures = 0;
       state.lastOkAt = response.timing.receivedAt;
@@ -68,7 +73,7 @@ export class HealthTracker {
       error: { type: string; message: string } | null;
     }[],
   ): void {
-    const recent = outcomes.slice(-WINDOW);
+    const recent = outcomes.slice(-HEALTH_WINDOW);
     const lastOk = recent.findLast((outcome) => outcome.ok);
     const lastFailed = recent.findLast((outcome) => !outcome.ok && outcome.error);
     this.#states.set(provider, {
@@ -96,9 +101,9 @@ export class HealthTracker {
     const successRate = okCalls.length / state.samples.length;
     const latencies = okCalls.map((sample) => sample.latencyMs).toSorted((a, b) => a - b);
     const status: ProviderStatus =
-      state.consecutiveFailures >= 3
+      state.consecutiveFailures >= DOWN_AFTER
         ? "down"
-        : state.consecutiveFailures > 0 || successRate < 0.8
+        : state.consecutiveFailures > 0 || successRate < HEALTHY_SHARE
           ? "degraded"
           : "healthy";
     return {

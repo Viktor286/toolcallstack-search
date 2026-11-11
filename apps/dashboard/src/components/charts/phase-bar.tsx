@@ -1,10 +1,12 @@
+import { MetricHelp } from "@/components/metric-help";
 import { ms } from "@/lib/format";
+import type { MetricId } from "@/lib/metric-docs";
 
 interface Stage {
   name: string;
   value: number | null;
   color: string;
-  hint: string;
+  help: MetricId;
 }
 
 interface Props {
@@ -30,27 +32,27 @@ export function PhaseBar({ queuedMs, phases }: Props) {
       name: "Queue",
       value: queuedMs,
       color: "var(--phase-queue)",
-      hint: "waiting under the gateway's rate limit",
+      help: "phaseQueue",
     },
-    { name: "DNS", value: phases?.dnsMs ?? null, color: "var(--phase-1)", hint: "name lookup" },
+    { name: "DNS", value: phases?.dnsMs ?? null, color: "var(--phase-1)", help: "phaseDns" },
     {
       name: "Connect",
       value: phases?.connectMs ?? null,
       color: "var(--phase-2)",
-      hint: "TCP handshake",
+      help: "phaseConnect",
     },
-    { name: "TLS", value: phases?.tlsMs ?? null, color: "var(--phase-3)", hint: "TLS handshake" },
+    { name: "TLS", value: phases?.tlsMs ?? null, color: "var(--phase-3)", help: "phaseTls" },
     {
       name: "First byte",
       value: phases?.ttfbMs ?? null,
       color: "var(--phase-4)",
-      hint: "request sent to response headers",
+      help: "phaseTtfb",
     },
     {
       name: "Download",
       value: phases?.downloadMs ?? null,
       color: "var(--phase-5)",
-      hint: "response body",
+      help: "phaseDownload",
     },
   ];
   const total = stages.reduce((sum, stage) => sum + (stage.value ?? 0), 0);
@@ -77,9 +79,11 @@ export function PhaseBar({ queuedMs, phases }: Props) {
       )}
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
         {stages.map((stage) => (
-          <div key={stage.name} className="flex items-center gap-2" title={stage.hint}>
+          <div key={stage.name} className="flex items-center gap-2">
             <span className="size-2 shrink-0 rounded-[2px]" style={{ background: stage.color }} />
-            <dt className="text-muted-foreground">{stage.name}</dt>
+            <dt className="text-muted-foreground">
+              <MetricHelp metric={stage.help}>{stage.name}</MetricHelp>
+            </dt>
             <dd className="ml-auto font-medium tabular-nums">
               {stage.value === null ? (phases?.connectionReused ? "reused" : "–") : ms(stage.value)}
             </dd>

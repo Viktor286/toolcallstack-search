@@ -12,6 +12,7 @@ import {
 import { useState } from "react";
 import { BarList } from "@/components/charts/bar-list";
 import { StackedTimeBars } from "@/components/charts/stacked-time-bars";
+import { MetricHelp } from "@/components/metric-help";
 import { ProviderName } from "@/components/provider-name";
 import { PageTitle, QueryError } from "@/components/query-state";
 import { Tile } from "@/components/tile";
@@ -139,24 +140,31 @@ export function UsagePage() {
         // While a new range loads, the previous render stays in place, dimmed.
         <div className={`space-y-4 transition-opacity ${stats.isFetching ? "opacity-60" : ""}`}>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <Tile icon={Activity} label="Calls" value={compact(calls)} />
+            <Tile icon={Activity} label="Calls" help="callsTotal" value={compact(calls)} />
             <Tile
               icon={TriangleAlert}
               label="Failed"
+              help="failedShare"
               value={percent(failures, calls)}
               note={`${compact(failures)} of ${compact(calls)} calls`}
             />
             <Tile
               icon={CircleDollarSign}
               label="Cost"
+              help="costTotal"
               value={usd(cost)}
               note={
                 unpriced.length > 0
                   ? `excludes ${unpriced.join(", ")} (no price set)`
-                  : "list price"
+                  : "reported, else list price"
               }
             />
-            <Tile icon={Layers} label="Providers used" value={String(providers.length)} />
+            <Tile
+              icon={Layers}
+              label="Providers used"
+              help="providersUsed"
+              value={String(providers.length)}
+            />
           </div>
 
           {calls === 0 ? (
@@ -191,7 +199,7 @@ export function UsagePage() {
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-base">
                       <Timer className="size-4 text-muted-foreground" aria-hidden />
-                      Typical latency
+                      <MetricHelp metric="typicalLatency">Typical latency</MetricHelp>
                     </CardTitle>
                     <CardDescription>
                       Median of successful calls, with the slowest {range.bucket}'s 95th percentile.
@@ -217,7 +225,7 @@ export function UsagePage() {
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-base">
                       <CircleDollarSign className="size-4 text-muted-foreground" aria-hidden />
-                      Cost
+                      <MetricHelp metric="costTotal">Cost</MetricHelp>
                     </CardTitle>
                     <CardDescription>
                       Reported by the provider where it says, otherwise the list-price estimate.
@@ -259,13 +267,27 @@ export function UsagePage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Provider</TableHead>
-                      <TableHead>Key</TableHead>
-                      <TableHead className="text-right">Calls</TableHead>
-                      <TableHead className="text-right">Requests sent</TableHead>
-                      <TableHead className="text-right">Reported</TableHead>
-                      <TableHead className="text-right">Estimated</TableHead>
-                      <TableHead className="text-right">Account change</TableHead>
-                      <TableHead className="text-right">Balance now</TableHead>
+                      <TableHead>
+                        <MetricHelp metric="keyFingerprint">Key</MetricHelp>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricHelp metric="keyCalls">Calls</MetricHelp>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricHelp metric="requestsSent">Requests sent</MetricHelp>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricHelp metric="reported">Reported</MetricHelp>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricHelp metric="estimated">Estimated</MetricHelp>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricHelp metric="accountChange">Account change</MetricHelp>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <MetricHelp metric="balanceNow">Balance now</MetricHelp>
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>

@@ -15,27 +15,33 @@ import {
 } from "lucide-react";
 import { PhaseBar } from "@/components/charts/phase-bar";
 import { CodeBlock } from "@/components/json-view";
+import { MetricHelp } from "@/components/metric-help";
 import { ProviderName } from "@/components/provider-name";
 import { ResultList } from "@/components/result-list";
 import { StatusLabel } from "@/components/status";
 import { Separator } from "@/components/ui/separator";
 import { api, type SearchResponse } from "@/lib/api";
+import type { MetricId } from "@/lib/metric-docs";
 import { callCost, dateTime, ms, usd } from "@/lib/format";
 
 function Fact({
   label,
   icon: Icon,
+  help,
   children,
 }: {
   label: string;
   icon: LucideIcon;
+  help: MetricId;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex items-center gap-2">
       <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       <div className="min-w-0">
-        <dt className="text-xs text-muted-foreground">{label}</dt>
+        <dt className="text-xs text-muted-foreground">
+          <MetricHelp metric={help}>{label}</MetricHelp>
+        </dt>
         <dd className="text-sm font-medium tabular-nums">{children}</dd>
       </div>
     </div>
@@ -76,28 +82,28 @@ export function CallDetail({ call }: { call: SearchResponse }) {
       )}
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
-        <Fact label="Total" icon={Timer}>
+        <Fact label="Total" icon={Timer} help="totalTime">
           {ms(call.timing.totalMs)}
         </Fact>
-        <Fact label="Final attempt" icon={Gauge}>
+        <Fact label="Final attempt" icon={Gauge} help="finalAttempt">
           {ms(call.timing.latencyMs)}
         </Fact>
-        <Fact label="Retries" icon={RotateCw}>
+        <Fact label="Retries" icon={RotateCw} help="retries">
           {call.retries.count}
         </Fact>
-        <Fact label="Upstream status" icon={Server}>
+        <Fact label="Upstream status" icon={Server} help="upstreamStatus">
           {call.upstream.status ?? "–"}
         </Fact>
-        <Fact label="Results" icon={ListOrdered}>
+        <Fact label="Results" icon={ListOrdered} help="results">
           {call.results.length}
         </Fact>
-        <Fact label="Cost" icon={CircleDollarSign}>
+        <Fact label="Cost" icon={CircleDollarSign} help="cost">
           {cost === null ? "unknown" : `${usd(cost)} (${call.usage.costSource})`}
         </Fact>
-        <Fact label="Credits" icon={Coins}>
+        <Fact label="Credits" icon={Coins} help="credits">
           {call.usage.credits ?? "–"}
         </Fact>
-        <Fact label="Backoff" icon={Hourglass}>
+        <Fact label="Backoff" icon={Hourglass} help="backoff">
           {ms(call.retries.backoffMs)}
         </Fact>
       </dl>

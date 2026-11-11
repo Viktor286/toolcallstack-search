@@ -12,10 +12,12 @@ import {
 import { useState } from "react";
 import { Link } from "react-router";
 import { MiniBars } from "@/components/charts/mini-bars";
+import { MetricHelp } from "@/components/metric-help";
 import { ProviderName } from "@/components/provider-name";
 import { StatusLabel, type StatusKind } from "@/components/status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ProviderInfo, Status } from "@/lib/api";
+import type { MetricId } from "@/lib/metric-docs";
 import { ago, compact, ms, usd } from "@/lib/format";
 import {
   LOW_DATA,
@@ -44,11 +46,14 @@ const LEVEL_COLOR = {
 export function Row({
   label,
   icon: Icon,
+  help,
   children,
   muted = false,
 }: {
   label: string;
   icon?: LucideIcon;
+  /** Explains the figure on hover. */
+  help?: MetricId;
   children: React.ReactNode;
   muted?: boolean;
 }) {
@@ -56,7 +61,7 @@ export function Row({
     <div className="flex items-baseline justify-between gap-3 text-sm">
       <dt className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
         {Icon && <Icon className="size-3.5 shrink-0 self-center" aria-hidden />}
-        {label}
+        {help ? <MetricHelp metric={help}>{label}</MetricHelp> : label}
       </dt>
       <dd
         className={`min-w-0 truncate text-right tabular-nums ${muted ? "text-muted-foreground" : "font-medium"}`}
@@ -97,7 +102,9 @@ function BudgetMeter({
         return (
           <div key={unit} className="text-sm">
             <div className="flex items-baseline justify-between gap-3">
-              <span className="text-muted-foreground">{title}</span>
+              <span className="text-muted-foreground">
+                <MetricHelp metric="budget">{title}</MetricHelp>
+              </span>
               <span className="font-medium tabular-nums">
                 {show(spent)} of {show(cap)}
                 {unit === "usd" ? "" : ` ${unit}`}
@@ -203,7 +210,9 @@ export function ProviderCard({ provider, info, balance, activity, store, now }: 
             name
           )}
         </CardTitle>
-        <StatusLabel kind={kind} label={statusLabel(provider)} />
+        <MetricHelp metric="health">
+          <StatusLabel kind={kind} label={statusLabel(provider)} />
+        </MetricHelp>
       </CardHeader>
       <CardContent>
         {activity && (
@@ -220,37 +229,42 @@ export function ProviderCard({ provider, info, balance, activity, store, now }: 
           </div>
         )}
         <dl className="space-y-1.5">
-          <Row label="Median latency" icon={Timer}>
+          <Row label="Median latency" icon={Timer} help="medianLatency">
             {ms(provider.medianLatencyMs)}
           </Row>
           {activity?.p95 != null && (
-            <Row label="p95, worst hour" icon={Gauge}>
+            <Row label="p95, worst hour" icon={Gauge} help="p95WorstHour">
               {ms(activity.p95)}
             </Row>
           )}
-          <Row label="Success" icon={HeartPulse} muted={provider.recentCalls < LOW_DATA}>
+          <Row
+            label="Success"
+            icon={HeartPulse}
+            help="success"
+            muted={provider.recentCalls < LOW_DATA}
+          >
             {successLabel(provider)}
           </Row>
           {activity && (
             <>
-              <Row label="Calls, 24 h" icon={Activity}>
+              <Row label="Calls, 24 h" icon={Activity} help="calls24h">
                 {compact(activity.calls)}
                 {activity.failures > 0 && ` · ${compact(activity.failures)} failed`}
               </Row>
-              <Row label="Cost, 24 h" icon={CircleDollarSign}>
+              <Row label="Cost, 24 h" icon={CircleDollarSign} help="cost24h">
                 {usd(activity.cost)}
               </Row>
             </>
           )}
-          <Row label="Last success" icon={Clock}>
+          <Row label="Last success" icon={Clock} help="lastSuccess">
             {ago(provider.lastOkAt)}
           </Row>
           {provider.queueDepth > 0 && (
-            <Row label="Queued now" icon={Hourglass}>
+            <Row label="Queued now" icon={Hourglass} help="queuedNow">
               {provider.queueDepth}
             </Row>
           )}
-          <Row label="Balance" icon={Wallet} muted={!text.known}>
+          <Row label="Balance" icon={Wallet} help="balance" muted={!text.known}>
             {text.text}
           </Row>
           {balance && (runwayNote || stale) && (

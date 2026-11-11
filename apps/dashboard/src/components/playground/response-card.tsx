@@ -12,6 +12,7 @@ import {
 import type { ReactNode } from "react";
 import { PhaseBar } from "@/components/charts/phase-bar";
 import { CodeBlock, CopyButton, DownloadButton } from "@/components/json-view";
+import { MetricHelp } from "@/components/metric-help";
 import { ProviderName } from "@/components/provider-name";
 import { ResultList } from "@/components/result-list";
 import { StatusLabel } from "@/components/status";
@@ -20,23 +21,28 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { SearchResponse } from "@/lib/api";
 import { callCost, ms, usd } from "@/lib/format";
+import type { MetricId } from "@/lib/metric-docs";
 import type { ResponseSummary } from "@/lib/playground";
 
-/** A labelled figure with an icon; the label is also the tooltip for the icon-only reading. */
+/** A labelled figure with an icon; the label explains the figure on hover. */
 export function Metric({
   icon: Icon,
   label,
+  help,
   children,
 }: {
   icon: LucideIcon;
   label: string;
+  help: MetricId;
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-2" title={label}>
+    <div className="flex items-center gap-2">
       <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       <div className="min-w-0">
-        <dt className="text-xs text-muted-foreground">{label}</dt>
+        <dt className="text-xs text-muted-foreground">
+          <MetricHelp metric={help}>{label}</MetricHelp>
+        </dt>
         <dd className="text-sm font-medium tabular-nums">{children}</dd>
       </div>
     </div>
@@ -83,30 +89,30 @@ export function ResponseCard({ response, name, summary, alsoIn }: Props) {
           />
         </CardTitle>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 pt-2 sm:grid-cols-4">
-          <Metric icon={Timer} label="Total time">
+          <Metric icon={Timer} label="Total time" help="totalTime">
             {ms(response.timing.totalMs)}
           </Metric>
-          <Metric icon={CircleDollarSign} label={`Cost (${response.usage.costSource})`}>
+          <Metric icon={CircleDollarSign} label={`Cost (${response.usage.costSource})`} help="cost">
             {cost === null ? "unknown" : usd(cost)}
           </Metric>
-          <Metric icon={ListOrdered} label="Results">
+          <Metric icon={ListOrdered} label="Results" help="results">
             {summary.results}
           </Metric>
-          <Metric icon={CalendarClock} label="With a date">
+          <Metric icon={CalendarClock} label="With a date" help="dated">
             {summary.dated} of {summary.results}
           </Metric>
           {response.usage.credits !== undefined && (
-            <Metric icon={Coins} label="Credits">
+            <Metric icon={Coins} label="Credits" help="credits">
               {response.usage.credits}
             </Metric>
           )}
           {response.retries.count > 0 && (
-            <Metric icon={RotateCw} label="Retries">
+            <Metric icon={RotateCw} label="Retries" help="retries">
               {response.retries.count} ({ms(response.retries.backoffMs)} backoff)
             </Metric>
           )}
           {response.timing.queuedMs >= 1 && (
-            <Metric icon={Hourglass} label="Queued">
+            <Metric icon={Hourglass} label="Queued" help="queued">
               {ms(response.timing.queuedMs)}
             </Metric>
           )}

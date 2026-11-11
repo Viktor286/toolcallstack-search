@@ -1,3 +1,4 @@
+import { MetricHelp } from "@/components/metric-help";
 import { ProviderName } from "@/components/provider-name";
 import { StatusLabel } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
@@ -39,16 +40,24 @@ export function Comparison({ responses, summaries, names }: Props) {
         <TableRow>
           <TableHead>Provider</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead className="min-w-40">Total time</TableHead>
-          <TableHead className="text-right">Cost</TableHead>
-          <TableHead className="text-right">Results</TableHead>
-          <TableHead className="text-right" title="Results that carry a publish date">
-            Dated
+          <TableHead className="min-w-40">
+            <MetricHelp metric="totalTime">Total time</MetricHelp>
           </TableHead>
-          <TableHead className="text-right" title="Results no other provider returned">
-            Unique
+          <TableHead className="text-right">
+            <MetricHelp metric="cost">Cost</MetricHelp>
           </TableHead>
-          <TableHead title="Publish date of the most recent result">Newest</TableHead>
+          <TableHead className="text-right">
+            <MetricHelp metric="results">Results</MetricHelp>
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricHelp metric="dated">Dated</MetricHelp>
+          </TableHead>
+          <TableHead className="text-right">
+            <MetricHelp metric="unique">Unique</MetricHelp>
+          </TableHead>
+          <TableHead>
+            <MetricHelp metric="newest">Newest</MetricHelp>
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
