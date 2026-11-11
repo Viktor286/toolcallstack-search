@@ -289,6 +289,10 @@ export const providerInfoSchema = z.object({
   id: z.string(),
   name: z.string(),
   docs: z.string(),
+  console: z
+    .string()
+    .nullable()
+    .describe("The provider's web console for the account, keys and billing"),
   configured: z.boolean(),
   features: z.array(z.string()),
   maxResults: z.number().int(),

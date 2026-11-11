@@ -12,6 +12,7 @@ import {
 import { useState } from "react";
 import { Link } from "react-router";
 import { MiniBars } from "@/components/charts/mini-bars";
+import { ConsoleLink } from "@/components/overview/console-link";
 import { MetricHelp } from "@/components/metric-help";
 import { ProviderName } from "@/components/provider-name";
 import { StatusLabel, type StatusKind } from "@/components/status";
@@ -198,7 +199,7 @@ export function ProviderCard({ provider, info, balance, activity, store, now }: 
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle className="text-base">
+        <CardTitle className="flex items-center gap-2 text-base">
           {linked ? (
             <Link
               to={`/calls?provider=${provider.id}`}
@@ -210,6 +211,7 @@ export function ProviderCard({ provider, info, balance, activity, store, now }: 
           ) : (
             name
           )}
+          <ConsoleLink info={info} />
         </CardTitle>
         <MetricHelp metric="health">
           <StatusLabel kind={kind} label={statusLabel(provider)} />

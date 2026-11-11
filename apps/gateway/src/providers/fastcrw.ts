@@ -8,6 +8,7 @@ export const fastcrw: Provider = {
   id: "fastcrw",
   name: "fastCRW",
   docs: "https://docs.fastcrw.com/search",
+  console: "https://fastcrw.com/dashboard",
   envVar: "FASTCRW_API_KEY",
   features: ["topic:news", "freshness", "freshness:hour"],
   maxResults: 20,

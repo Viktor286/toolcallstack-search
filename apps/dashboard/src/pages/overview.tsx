@@ -11,6 +11,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ConsoleLink } from "@/components/overview/console-link";
 import { ProviderCard } from "@/components/overview/provider-card";
 import { ProviderName } from "@/components/provider-name";
 import { PageTitle, QueryError } from "@/components/query-state";
@@ -285,8 +286,9 @@ export function OverviewPage() {
                         key={provider.id}
                         className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2 text-sm first:pt-0 last:pb-0"
                       >
-                        <span className="font-medium">
+                        <span className="flex items-center gap-2 font-medium">
                           <ProviderName id={provider.id} label={details?.name ?? provider.id} />
+                          <ConsoleLink info={details} />
                         </span>
                         <span className="flex flex-wrap items-center gap-x-4 text-muted-foreground">
                           {provider.configured ? (

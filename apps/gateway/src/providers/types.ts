@@ -62,6 +62,8 @@ export interface Provider {
   id: string;
   name: string;
   docs: string;
+  /** The provider's web console, where the account, keys and billing are managed. */
+  console?: string;
   /** Environment variable holding the API key. */
   envVar: string;
   /** Unified params this provider honours; anything else is dropped with a warning. */

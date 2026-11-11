@@ -6,6 +6,7 @@ export const tavily: Provider = {
   id: "tavily",
   name: "Tavily",
   docs: "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+  console: "https://app.tavily.com/home",
   envVar: "TAVILY_API_KEY",
   features: ["topic:news", "freshness", "startDate", "endDate", "includeDomains", "excludeDomains"],
   maxResults: 20,

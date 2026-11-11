@@ -10,6 +10,7 @@ export const you: Provider = {
   id: "you",
   name: "You.com",
   docs: "https://you.com/docs/api-reference/search/v1-search",
+  console: "https://you.com/platform",
   envVar: "YOU_API_KEY",
   features: ["freshness", "startDate", "endDate", "includeDomains", "excludeDomains", "country"],
   maxResults: 100,

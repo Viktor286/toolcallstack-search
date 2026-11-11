@@ -6,6 +6,7 @@ export const parallel: Provider = {
   id: "parallel",
   name: "Parallel Search API",
   docs: "https://docs.parallel.ai/api-reference/search-beta/search",
+  console: "https://platform.parallel.ai/home",
   envVar: "PARALLEL_API_KEY",
   // after_date is a calendar date, so an hour window cannot be expressed.
   features: ["freshness", "startDate", "includeDomains", "excludeDomains", "country"],

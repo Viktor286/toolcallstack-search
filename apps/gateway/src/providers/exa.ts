@@ -6,6 +6,7 @@ export const exa: Provider = {
   id: "exa",
   name: "Exa",
   docs: "https://docs.exa.ai/reference/search",
+  console: "https://dashboard.exa.ai/home",
   envVar: "EXA_API_KEY",
   features: [
     "topic:news",

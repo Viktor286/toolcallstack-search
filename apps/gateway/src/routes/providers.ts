@@ -15,6 +15,7 @@ export function describeProvider(
     id: provider.id,
     name: provider.name,
     docs: provider.docs,
+    console: provider.console ?? null,
     configured: Boolean(env[provider.envVar]),
     envVar: provider.envVar,
     features: provider.features,

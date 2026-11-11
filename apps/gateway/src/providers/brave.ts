@@ -8,6 +8,7 @@ export const brave: Provider = {
   id: "brave",
   name: "Brave Search API",
   docs: "https://api-dashboard.search.brave.com/app/documentation/web-search/query",
+  console: "https://api-dashboard.search.brave.com/app/dashboard",
   envVar: "BRAVE_API_KEY",
   features: ["topic:news", "freshness", "startDate", "endDate", "country"],
   maxResults: 20,

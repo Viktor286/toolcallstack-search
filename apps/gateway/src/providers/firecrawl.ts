@@ -14,6 +14,7 @@ export const firecrawl: Provider = {
   id: "firecrawl",
   name: "Firecrawl",
   docs: "https://docs.firecrawl.dev/features/search",
+  console: "https://www.firecrawl.dev/signin?view=signup",
   envVar: "FIRECRAWL_API_KEY",
   features: [
     "topic:news",

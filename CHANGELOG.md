@@ -44,6 +44,8 @@ the version is below 1.0 a minor release may change the API.
   Postgres no longer stops the gateway at start; `pnpm smoke` sends the token of a named
   `GATEWAY_API_KEYS` entry instead of `name:token`; a playground link that sets a field of the
   collapsed options panel opens it, so no filter applies unseen.
+- `/v1/providers` gives each provider's web `console`, and the Overview links to it beside each
+  provider's name.
 - Security: results whose link is not http(s), such as `javascript:` or `data:`, are dropped with a
   warning and counted as `parse_anomalies_total{kind="bad_url"}`, and the dashboard shows such a
   link from an older call as text. An unknown provider id no longer becomes a metric label, so

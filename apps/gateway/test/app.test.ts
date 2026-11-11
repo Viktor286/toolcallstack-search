@@ -582,6 +582,8 @@ describe("outbound rate limits", () => {
       pricing: { perRequestUsd: 0.002 },
     });
     expect(byId.brave).toMatchObject({ limits: {}, reportsBalance: false });
+    // Every real provider links to its web console.
+    for (const provider of list) expect(provider.console, provider.id).toMatch(/^https:\/\//);
   });
 });
 
