@@ -282,6 +282,36 @@ describe("POST /v1/search", () => {
     expect(unconfigured.statusCode).toBe(503);
     expect(unconfigured.json().error.message).toContain("EXA_API_KEY");
     expect(fetchMock).not.toHaveBeenCalled();
+    // The id is the caller's text, so it must not become a metric label.
+    const metrics = await app.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.body).not.toContain('provider="nope"');
+    expect(metrics.body).toContain('provider="exa"');
+  });
+
+  it("drops results whose link is not a web page", async () => {
+    const { app } = await setup(async () =>
+      json({
+        results: [
+          { url: "javascript:alert(document.domain)", title: "Script", content: "x" },
+          { url: "data:text/html,<b>x</b>", title: "Data", content: "y" },
+          { url: "https://a.com/1", title: "One", content: "first" },
+        ],
+      }),
+    );
+    close = () => app.close();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/search",
+      payload: { provider: "tavily", query: "hello" },
+    });
+    expect(
+      response.json().results.map((r: { position: number; url: string }) => [r.position, r.url]),
+    ).toEqual([[1, "https://a.com/1"]]);
+    expect(response.json().warnings).toContain(
+      "2 results had a link that is not http(s) and were dropped",
+    );
+    const metrics = await app.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.body).toMatch(/parse_anomalies_total\{provider="tavily",kind="bad_url"\} 1/);
   });
 
   it("validates the request body", async () => {
@@ -1009,6 +1039,28 @@ describe("dashboard", () => {
     );
     expect((await app.inject({ method: "GET", url: "/ui/assets/gone.js" })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/nope" })).statusCode).toBe(404);
+  });
+
+  it("sends security headers, with a script policy on the dashboard", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "toolcallstack-search-ui-"));
+    writeFileSync(join(dir, "index.html"), "<!doctype html><title>app</title>");
+    const app = await buildApp({ config: loadConfig({ LOG_LEVEL: "silent" }), env, uiDir: dir });
+    close = () => app.close();
+
+    for (const url of ["/v1/status", "/docs/", "/health", "/nope"]) {
+      const { headers } = await app.inject({ method: "GET", url });
+      expect(headers["x-content-type-options"], url).toBe("nosniff");
+      expect(headers["x-frame-options"], url).toBe("DENY");
+      expect(headers["referrer-policy"], url).toBe("no-referrer");
+      expect(headers["content-security-policy"], url).toContain("frame-ancestors 'none'");
+    }
+    // The fallback page for client-side routes gets the policy as well as the files.
+    for (const url of ["/ui/", "/ui/calls", "/ui/index.html"]) {
+      const { headers } = await app.inject({ method: "GET", url });
+      expect(headers["content-security-policy"], url).toContain("script-src 'self';");
+      expect(headers["content-security-policy"], url).toContain("frame-ancestors 'none'");
+      expect(headers["x-frame-options"], url).toBe("DENY");
+    }
   });
 
   it("is simply absent when there is no build", async () => {

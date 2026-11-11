@@ -3,7 +3,7 @@ import { SpanKind, SpanStatusCode, context, trace, type Context } from "@opentel
 import type { FastifyBaseLogger } from "fastify";
 import type { BudgetTracker } from "./budget.ts";
 import { cacheKey, type CacheEntry, type ResponseCache } from "./cache.ts";
-import { canonicalUrl } from "./canonical-url.ts";
+import { canonicalUrl, isWebUrl } from "./canonical-url.ts";
 import { withCost, type Pricing } from "./cost.ts";
 import type { HealthTracker } from "./health.ts";
 import { QueueTimeoutError, type Limiter } from "./limiter.ts";
@@ -413,19 +413,24 @@ async function callUpstream(
     });
 
     if (attempt.parsed) {
-      const readable = attempt.parsed.results.filter((result) => result.url !== "");
+      const linked = attempt.parsed.results.filter((result) => result.url !== "");
+      // Anything but a web link is no search result, and a `javascript:` one is unsafe to show.
+      const readable = linked.filter((result) => isWebUrl(result.url));
       response.results = readable.map((result, position) => ({
         position: position + 1,
         ...result,
         canonicalUrl: canonicalUrl(result.url),
       }));
       // A changed response format does not fail a call: the parser just finds nothing.
-      const dropped = attempt.parsed.results.length - readable.length;
-      if (dropped > 0) {
+      for (const [dropped, reason, kind] of [
+        [attempt.parsed.results.length - linked.length, "had no URL", "no_url"],
+        [linked.length - readable.length, "had a link that is not http(s)", "bad_url"],
+      ] as const) {
+        if (dropped === 0) continue;
         response.warnings.push(
-          `${dropped} ${dropped === 1 ? "result" : "results"} had no URL and ${dropped === 1 ? "was" : "were"} dropped`,
+          `${dropped} ${dropped === 1 ? "result" : "results"} ${reason} and ${dropped === 1 ? "was" : "were"} dropped`,
         );
-        deps.metrics.parseAnomalies.inc({ provider: provider.id, kind: "no_url" });
+        deps.metrics.parseAnomalies.inc({ provider: provider.id, kind });
       }
       if (readable.length === 0 && holdsUrl(attempt.raw)) {
         response.warnings.push(
@@ -569,14 +574,16 @@ async function runSearch(
   const outcome = response.error?.type ?? "ok";
   const traceId = trace.getSpanContext(active)?.traceId;
   const labels = { provider: response.provider, outcome };
-  if (!hit) {
+  // An unknown id is whatever the caller sent: as a metric label it would add series without end.
+  const measured = !hit && provider !== undefined;
+  if (measured) {
     deps.metrics.upstreamCalls.inc(labels);
     deps.metrics.observeCall(labels, response.timing.totalMs / 1000, traceId);
   }
   if (response.retries.attempts.length > 0) {
     deps.metrics.observeUpstream(labels, response.timing.latencyMs / 1000, traceId);
   }
-  if (response.ok && !hit) {
+  if (response.ok && measured) {
     deps.metrics.upstreamResults.observe({ provider: response.provider }, response.results.length);
     const dated = response.results.filter((result) => result.publishedAt !== null).length;
     deps.metrics.results.inc({ provider: response.provider, dated: "true" }, dated);

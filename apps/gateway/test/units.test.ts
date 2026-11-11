@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import zlib from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { pollBalances } from "../src/balances.ts";
-import { canonicalUrl } from "../src/canonical-url.ts";
+import { canonicalUrl, isWebUrl } from "../src/canonical-url.ts";
 import { estimateCost, withCost } from "../src/cost.ts";
 import { ProviderLimiter, QueueTimeoutError } from "../src/limiter.ts";
 import { BudgetTracker } from "../src/budget.ts";
@@ -445,5 +445,22 @@ describe("canonicalUrl", () => {
     );
     expect(canonicalUrl("https://example.com:8443/")).toBe("https://example.com:8443");
     expect(canonicalUrl("not a url ")).toBe("not a url");
+  });
+});
+
+describe("isWebUrl", () => {
+  it("accepts only http and https links", () => {
+    expect(isWebUrl("https://example.com/a")).toBe(true);
+    expect(isWebUrl(" http://example.com ")).toBe(true);
+    for (const url of [
+      "javascript:alert(1)",
+      "JavaScript:alert(1)",
+      "data:text/html,x",
+      "mailto:a@b.c",
+      "",
+      "not a url",
+    ]) {
+      expect(isWebUrl(url), url).toBe(false);
+    }
   });
 });

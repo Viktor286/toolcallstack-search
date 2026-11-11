@@ -149,6 +149,16 @@ export async function buildApp(options: AppOptions) {
   app.decorate("services", services);
   app.decorateRequest("client", null);
 
+  // Nothing the gateway serves is meant to be framed or sniffed; /ui tightens this further.
+  app.addHook("onSend", async (_request, reply) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("x-frame-options", "DENY");
+    if (!reply.hasHeader("content-security-policy")) {
+      reply.header("content-security-policy", "frame-ancestors 'none'");
+    }
+  });
+
   app.setErrorHandler(
     (error: { statusCode?: number; validation?: unknown; message: string }, request, reply) => {
       const status = error.statusCode ?? 500;

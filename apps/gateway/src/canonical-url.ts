@@ -25,3 +25,13 @@ export function canonicalUrl(url: string): string {
   ).toString();
   return `https://${host}${port}${path}${query ? `?${query}` : ""}`;
 }
+
+/** Whether a link opens a web page. Providers relay what they index, `javascript:` links included. */
+export function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url.trim());
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}

@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import type { SearchResponse } from "@/lib/api";
 import { dateTime } from "@/lib/format";
 import { hostOf } from "@/lib/playground";
+import { isWebUrl } from "../../../gateway/src/canonical-url.ts";
 
 interface Props {
   results: SearchResponse["results"];
@@ -22,14 +23,19 @@ export function ResultList({ results, alsoIn }: Props) {
               {result.position}
             </span>
             <div className="min-w-0 flex-1">
-              <a
-                href={result.url}
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium underline-offset-4 hover:underline"
-              >
-                {result.title || "(untitled)"}
-              </a>
+              {/* Calls logged before the gateway dropped such links can still hold one. */}
+              {isWebUrl(result.url) ? (
+                <a
+                  href={result.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium underline-offset-4 hover:underline"
+                >
+                  {result.title || "(untitled)"}
+                </a>
+              ) : (
+                <span className="font-medium">{result.title || "(untitled)"}</span>
+              )}
               <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                 <span className="inline-flex min-w-0 items-center gap-1" title={result.url}>
                   <Globe className="size-3 shrink-0" aria-hidden />

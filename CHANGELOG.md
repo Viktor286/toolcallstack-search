@@ -44,6 +44,11 @@ the version is below 1.0 a minor release may change the API.
   Postgres no longer stops the gateway at start; `pnpm smoke` sends the token of a named
   `GATEWAY_API_KEYS` entry instead of `name:token`; a playground link that sets a field of the
   collapsed options panel opens it, so no filter applies unseen.
+- Security: results whose link is not http(s), such as `javascript:` or `data:`, are dropped with a
+  warning and counted as `parse_anomalies_total{kind="bad_url"}`, and the dashboard shows such a
+  link from an older call as text. An unknown provider id no longer becomes a metric label, so
+  callers cannot grow `/metrics` without limit. Every response carries `nosniff`, no-referrer and
+  no-framing headers, and the dashboard a Content Security Policy that only runs its own scripts.
 - Dashboard Overview: a summary strip (providers by health, calls, failures and cost over 24 hours),
   a 24-hour calls chart per provider, providers ordered by how much attention they need with idle
   ones collapsed, balance runway and stale-snapshot hints, amber budget meters with a "cap reached

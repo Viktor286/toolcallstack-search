@@ -23,6 +23,13 @@ Things worth knowing when you deploy the gateway:
   fingerprint, client name, counts, cost and latency, but no query text or results.
 - With caching on, answers are held in memory and served to any client that sends an identical
   request to the same provider within the time it allows.
+- Every response is sent with `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+  and `X-Frame-Options: DENY` with `frame-ancestors 'none'`, so no other site can embed the
+  dashboard or the API docs. The dashboard's pages also carry a Content Security Policy that runs
+  only its own scripts and talks only to the gateway. HSTS is left to the proxy that terminates
+  TLS.
+- Results whose link is not http(s) are dropped, so a `javascript:` link a provider relays never
+  reaches a client.
 - The dashboard keeps the gateway API key in the browser's local storage, and the Playground keeps
   its last 10 runs there (queries and unified results, without raw upstream bodies). "Clear
   history" in the Playground removes them.

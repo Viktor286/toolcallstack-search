@@ -425,7 +425,8 @@ Transport, timing, retries, limits, cost, metrics and storage are shared and liv
     `download`, and `upstream_ttfb_seconds`
   - `results_total{provider,dated}`, `upstream_results`, and `parse_anomalies_total{provider,kind}`:
     successful answers with no readable result (`unreadable`), a sign the provider changed its
-    response format, or results without a URL (`no_url`). Such a call also carries a warning.
+    response format, results without a URL (`no_url`), or with a link that is not http(s)
+    (`bad_url`), such as `javascript:`. Those results are dropped and the call carries a warning.
   - `queue_wait_seconds`, `queue_depth`, `cache_lookups_total{provider,result}`
   - `cost_usd_total{provider,source}`, `budget_spent{provider,period,unit}`, `balance{provider,unit}`
   - `http_request_duration_seconds` per route, and Node.js runtime metrics
