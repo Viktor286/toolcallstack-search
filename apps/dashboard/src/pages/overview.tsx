@@ -1,179 +1,310 @@
 import { useQuery } from "@tanstack/react-query";
+import {
+  Activity,
+  CircleDollarSign,
+  Clock,
+  Database,
+  FlaskConical,
+  HeartPulse,
+  RefreshCw,
+  Tag,
+  TriangleAlert,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { ProviderCard } from "@/components/overview/provider-card";
 import { ProviderName } from "@/components/provider-name";
 import { PageTitle, QueryError } from "@/components/query-state";
-import { StatusLabel, type StatusKind } from "@/components/status";
+import { StatusLabel } from "@/components/status";
+import { Tile } from "@/components/tile";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, type ProviderInfo, type Status, type UsageResponse } from "@/lib/api";
-import { ago, compact, duration, ms, usd } from "@/lib/format";
+import {
+  ApiError,
+  api,
+  query,
+  type ProviderInfo,
+  type StatsResponse,
+  type Status,
+  type UsageResponse,
+} from "@/lib/api";
+import { ago, compact, duration, percent, usd } from "@/lib/format";
+import {
+  activityByProvider,
+  balanceText,
+  byAttention,
+  healthCounts,
+  isActive,
+  seriesStart,
+  type Balance,
+} from "@/lib/overview";
 
-type Budget = NonNullable<ProviderInfo["budget"]>;
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 text-sm">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 truncate text-right font-medium tabular-nums">{children}</dd>
-    </div>
-  );
-}
-
-/** Spend against a cap; the track is a lighter step of the fill's own hue. */
-function BudgetMeter({ title, period }: { title: string; period: NonNullable<Budget["daily"]> }) {
-  const units = (["calls", "usd", "credits"] as const).filter(
-    (unit) => period.caps[unit] !== undefined,
-  );
-  return (
-    <>
-      {units.map((unit) => {
-        const cap = period.caps[unit] ?? 0;
-        const spent = period.spent[unit];
-        const show = (value: number) => (unit === "usd" ? usd(value) : compact(value));
-        return (
-          <div key={unit} className="text-sm">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-muted-foreground">{title}</span>
-              <span className="font-medium tabular-nums">
-                {show(spent)} of {show(cap)}
-                {unit === "usd" ? "" : ` ${unit}`}
-              </span>
-            </div>
-            <div
-              className="mt-1 h-1.5 rounded-full"
-              style={{ background: "var(--magnitude-track)" }}
-            >
-              <div
-                className="h-full rounded-full"
-                style={{
-                  width: `${cap > 0 ? Math.min(100, (spent / cap) * 100) : 100}%`,
-                  background: spent >= cap ? "var(--status-critical)" : "var(--magnitude)",
-                }}
-              />
-            </div>
-          </div>
-        );
-      })}
-    </>
-  );
+/** The current time, refreshed so "updated 12s ago" and the forecasts keep moving. */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+  return now;
 }
 
 export function OverviewPage() {
+  const now = useNow(5_000);
+  // Only a refresh the user asked for shows as one; background polls stay quiet.
+  const [refreshing, setRefreshing] = useState(false);
   const status = useQuery({
     queryKey: ["status"],
     queryFn: () => api<Status>("/v1/status"),
     refetchInterval: 10_000,
   });
+  const store = status.data?.store;
+  // Budgets and names are extras: the page renders from the status alone.
   const providers = useQuery({
     queryKey: ["providers"],
     queryFn: () => api<{ providers: ProviderInfo[] }>("/v1/providers"),
     refetchInterval: 10_000,
   });
-  // Balances come from the call log's database; the page works without it.
+  // Balances and history come from the call log's database; the page works without it.
   const usage = useQuery({
     queryKey: ["usage", "latest"],
     queryFn: () => api<UsageResponse>("/v1/usage"),
     refetchInterval: 60_000,
+    enabled: store === "ok",
+  });
+  const stats = useQuery({
+    queryKey: ["stats", "overview"],
+    queryFn: () => {
+      const to = new Date();
+      const from = seriesStart(to.getTime());
+      return api<StatsResponse>(
+        `/v1/stats${query({ from: from.toISOString(), to: to.toISOString(), bucket: "hour" })}`,
+      );
+    },
+    refetchInterval: 60_000,
+    enabled: store === "ok",
   });
 
-  const error = status.error ?? providers.error;
-  if (error) return <QueryError error={error} />;
-  if (!status.data || !providers.data) {
+  // A rejected key needs the key prompt, even over data loaded with the old key.
+  const keyRejected = status.error instanceof ApiError && status.error.status === 401;
+  if (status.error && (!status.data || keyRejected)) return <QueryError error={status.error} />;
+  if (!status.data) {
     return (
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 6 }, (_, index) => (
-          <Skeleton key={index} className="h-52" />
-        ))}
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          {Array.from({ length: 4 }, (_, index) => (
+            <Skeleton key={index} className="h-24" />
+          ))}
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }, (_, index) => (
+            <Skeleton key={index} className="h-72" />
+          ))}
+        </div>
       </div>
     );
   }
 
-  const info = new Map(providers.data.providers.map((provider) => [provider.id, provider]));
-  const balances = new Map(
-    (usage.data?.providers ?? [])
-      .filter((row) => row.balance)
-      .map((row) => [row.provider, row.balance!]),
+  const gateway = status.data;
+  const info = new Map(
+    (providers.data?.providers ?? []).map((provider) => [provider.id, provider]),
   );
+  // A rotated key leaves older rows behind; the freshest snapshot is the one that counts.
+  const balances = new Map<string, Balance>();
+  for (const row of usage.data?.providers ?? []) {
+    const known = balances.get(row.provider);
+    if (row.balance && (!known || row.balance.latest.takenAt > known.latest.takenAt)) {
+      balances.set(row.provider, row.balance);
+    }
+  }
+  const activity = stats.data ? activityByProvider(stats.data.points, now) : undefined;
+  // Which providers get a card depends on their history; wait for it rather than reshuffle.
+  const historyPending = store === "ok" && stats.isPending;
+  const rows = byAttention(gateway.providers, (id) => activity?.get(id)?.calls ?? 0);
+  const active = rows.filter((row) => isActive(row.rank));
+  const idle = rows.filter((row) => !isActive(row.rank));
+  const counts = healthCounts(gateway.providers);
+  const demo = gateway.providers.some(
+    (provider) => provider.configured && provider.id.startsWith("demo-"),
+  );
+
+  const calls = [...(activity?.values() ?? [])].reduce((sum, item) => sum + item.calls, 0);
+  const failures = [...(activity?.values() ?? [])].reduce((sum, item) => sum + item.failures, 0);
+  const cost = [...(activity?.values() ?? [])].reduce((sum, item) => sum + (item.cost ?? 0), 0);
+  const unpriced = [...(activity?.entries() ?? [])]
+    .filter(([, item]) => item.cost === null && item.calls > 0)
+    .map(([id]) => id);
+
+  const refresh = () => {
+    setRefreshing(true);
+    void Promise.allSettled([
+      status.refetch(),
+      providers.refetch(),
+      ...(store === "ok" ? [usage.refetch(), stats.refetch()] : []),
+    ]).finally(() => setRefreshing(false));
+  };
+  const withData = counts.configured - counts.idle;
+  const updatedAt = new Date(status.dataUpdatedAt).toISOString();
 
   return (
     <>
       <PageTitle title="Overview">
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted-foreground">
+          {demo && (
+            <Badge variant="secondary">
+              <FlaskConical />
+              Demo mode
+            </Badge>
+          )}
           <StatusLabel
-            kind={status.data.status === "ok" ? "ok" : "degraded"}
-            label={status.data.status === "ok" ? "Gateway OK" : "Gateway degraded"}
+            kind={gateway.status === "ok" ? "ok" : "degraded"}
+            label={gateway.status === "ok" ? "Gateway OK" : "Gateway degraded"}
           />
-          <span>v{status.data.version}</span>
-          <span>up {duration(status.data.uptimeSeconds)}</span>
-          <span>
+          <span className="inline-flex items-center gap-1.5">
+            <Tag className="size-3.5" aria-hidden />v{gateway.version}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Clock className="size-3.5" aria-hidden />
+            up {duration(gateway.uptimeSeconds)}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Database className="size-3.5" aria-hidden />
             call log{" "}
-            {status.data.store === "ok"
-              ? "on"
-              : status.data.store === "none"
-                ? "off"
-                : "unreachable"}
+            {gateway.store === "ok" ? "on" : gateway.store === "none" ? "off" : "unreachable"}
+          </span>
+          <span className="flex items-center gap-2">
+            <span>updated {ago(updatedAt, now)}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={refreshing}
+              aria-busy={refreshing}
+              onClick={refresh}
+            >
+              <RefreshCw className={refreshing ? "animate-spin" : ""} />
+              Refresh
+            </Button>
           </span>
         </div>
       </PageTitle>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {status.data.providers.map((provider) => {
-          const details = info.get(provider.id);
-          const balance = balances.get(provider.id);
-          const kind: StatusKind = provider.configured ? provider.status : "off";
-          return (
-            <Card key={provider.id} className={provider.configured ? "" : "opacity-60"}>
-              <CardHeader className="flex flex-row items-center justify-between gap-2">
+
+      {status.isError && (
+        <p className="mb-4 text-sm text-muted-foreground" role="status">
+          <StatusLabel kind="degraded" label="Could not refresh." /> Showing what the gateway
+          reported {ago(updatedAt, now)}.
+        </p>
+      )}
+
+      <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Tile
+          icon={HeartPulse}
+          label="Providers"
+          value={withData > 0 ? `${counts.healthy} of ${withData} healthy` : "No calls yet"}
+          note={
+            [
+              counts.degraded > 0 && `${counts.degraded} degraded`,
+              counts.down > 0 && `${counts.down} down`,
+              counts.blocked > 0 && `${counts.blocked} over budget`,
+              counts.idle > 0 && `${counts.idle} without calls since start`,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "no problems"
+          }
+        />
+        {activity && (
+          <>
+            <Tile icon={Activity} label="Calls, 24 h" value={compact(calls)} />
+            <Tile
+              icon={TriangleAlert}
+              label="Failed, 24 h"
+              value={percent(failures, calls)}
+              note={`${compact(failures)} of ${compact(calls)} calls`}
+            />
+            <Tile
+              icon={CircleDollarSign}
+              label="Cost, 24 h"
+              value={usd(cost)}
+              note={
+                unpriced.length > 0
+                  ? `excludes ${unpriced.join(", ")} (no price set)`
+                  : "list price"
+              }
+            />
+          </>
+        )}
+      </div>
+
+      {historyPending ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }, (_, index) => (
+            <Skeleton key={index} className="h-72" />
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {active.map(({ provider }) => (
+              <ProviderCard
+                key={provider.id}
+                provider={provider}
+                info={info.get(provider.id)}
+                balance={balances.get(provider.id)}
+                activity={activity?.get(provider.id)}
+                store={gateway.store}
+                now={now}
+              />
+            ))}
+          </div>
+
+          {idle.length > 0 && (
+            <Card className="mt-4">
+              <CardHeader>
                 <CardTitle className="text-base">
-                  <ProviderName id={provider.id} label={details?.name ?? provider.id} />
+                  {active.length > 0 ? "Not in use" : "Providers"}
                 </CardTitle>
-                <StatusLabel kind={kind} />
               </CardHeader>
               <CardContent>
-                {provider.configured ? (
-                  <dl className="space-y-1.5">
-                    <Row label="Median latency">{ms(provider.medianLatencyMs)}</Row>
-                    <Row label="Success">
-                      {provider.successRate === null
-                        ? "–"
-                        : `${Math.round(provider.successRate * 100)}% of last ${provider.recentCalls}`}
-                    </Row>
-                    <Row label="Last success">{ago(provider.lastOkAt)}</Row>
-                    {provider.queueDepth > 0 && <Row label="Queued now">{provider.queueDepth}</Row>}
-                    <Row label="Balance">
-                      {balance?.latest.remaining != null
-                        ? balance.unit === "usd"
-                          ? `${usd(balance.latest.remaining)} left`
-                          : `${compact(balance.latest.remaining)} credits left`
-                        : balance?.latest.used != null
-                          ? `${balance.unit === "usd" ? usd(balance.latest.used) : compact(balance.latest.used)} used`
-                          : "not reported"}
-                    </Row>
-                    {details?.budget?.daily && (
-                      <BudgetMeter title="Today" period={details.budget.daily} />
-                    )}
-                    {details?.budget?.monthly && (
-                      <BudgetMeter title="This month" period={details.budget.monthly} />
-                    )}
-                    {provider.budgetBlocked && (
-                      <p className="pt-1 text-xs text-muted-foreground">{provider.budgetBlocked}</p>
-                    )}
-                    {provider.lastError && provider.status !== "healthy" && (
-                      <p className="pt-1 text-xs break-words text-muted-foreground">
-                        Last error ({ago(provider.lastError.at)}): {provider.lastError.type}.{" "}
-                        {provider.lastError.message.slice(0, 140)}
-                      </p>
-                    )}
-                  </dl>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Set <code className="text-foreground">{details?.envVar}</code> on the gateway to
-                    use this provider.
-                  </p>
-                )}
+                <ul className="divide-y">
+                  {idle.map(({ provider }) => {
+                    const details = info.get(provider.id);
+                    const balance = balanceText(balances.get(provider.id), details, gateway.store);
+                    return (
+                      <li
+                        key={provider.id}
+                        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2 text-sm first:pt-0 last:pb-0"
+                      >
+                        <span className="font-medium">
+                          <ProviderName id={provider.id} label={details?.name ?? provider.id} />
+                        </span>
+                        <span className="flex flex-wrap items-center gap-x-4 text-muted-foreground">
+                          {provider.configured ? (
+                            <>
+                              {balance.known && (
+                                <span className="tabular-nums">{balance.text}</span>
+                              )}
+                              <StatusLabel kind="unknown" label="No calls yet" />
+                            </>
+                          ) : (
+                            <>
+                              {details?.envVar && (
+                                <span>
+                                  set <code className="text-foreground">{details.envVar}</code>
+                                </span>
+                              )}
+                              <StatusLabel kind="off" />
+                            </>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
               </CardContent>
             </Card>
-          );
-        })}
-      </div>
+          )}
+        </>
+      )}
     </>
   );
 }

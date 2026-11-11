@@ -1,5 +1,7 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { ChevronDown, RefreshCw, SearchX, User } from "lucide-react";
 import { useState } from "react";
+import { useSearchParams } from "react-router";
 import { CallDetail } from "@/components/call-detail";
 import { ProviderName } from "@/components/provider-name";
 import { PageTitle, QueryError } from "@/components/query-state";
@@ -38,8 +40,12 @@ import {
 import { callCost, dateTime, ms, usd } from "@/lib/format";
 
 export function CallsPage() {
-  const [provider, setProvider] = useState("all");
-  const [outcome, setOutcome] = useState("all");
+  // Overview links here with ?provider=…&ok=false.
+  const [params] = useSearchParams();
+  const [provider, setProvider] = useState(params.get("provider") ?? "all");
+  const [outcome, setOutcome] = useState(
+    ["true", "false"].includes(params.get("ok") ?? "") ? params.get("ok")! : "all",
+  );
   const [client, setClient] = useState("");
   const [open, setOpen] = useState<SearchResponse | null>(null);
 
@@ -69,6 +75,9 @@ export function CallsPage() {
     <>
       <PageTitle title="Calls">
         <Button variant="outline" size="sm" onClick={() => void calls.refetch()}>
+          <RefreshCw
+            className={calls.isFetching && !calls.isFetchingNextPage ? "animate-spin" : ""}
+          />
           Refresh
         </Button>
       </PageTitle>
@@ -96,13 +105,19 @@ export function CallsPage() {
             <SelectItem value="false">Failed</SelectItem>
           </SelectContent>
         </Select>
-        <Input
-          className="w-44"
-          placeholder="Client name"
-          aria-label="Client name"
-          value={client}
-          onChange={(event) => setClient(event.target.value)}
-        />
+        <div className="relative">
+          <User
+            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            className="w-48 pl-9"
+            placeholder="Client name"
+            aria-label="Client name"
+            value={client}
+            onChange={(event) => setClient(event.target.value)}
+          />
+        </div>
       </div>
 
       {calls.error ? (
@@ -171,6 +186,7 @@ export function CallsPage() {
                 {rows.length === 0 && !calls.isLoading && (
                   <TableRow>
                     <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                      <SearchX className="mx-auto mb-2 size-6" aria-hidden />
                       No calls match. Clear the filters, or run a search from the Playground.
                     </TableCell>
                   </TableRow>
@@ -185,6 +201,7 @@ export function CallsPage() {
                 disabled={calls.isFetchingNextPage}
                 onClick={() => void calls.fetchNextPage()}
               >
+                <ChevronDown />
                 {calls.isFetchingNextPage ? "Loading…" : "Load older calls"}
               </Button>
             </div>

@@ -1,5 +1,14 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Moon, Sun } from "lucide-react";
+import {
+  ChartColumn,
+  FlaskConical,
+  KeyRound,
+  LayoutDashboard,
+  Moon,
+  ScrollText,
+  Sun,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { NavLink, Outlet } from "react-router";
 import { Button } from "@/components/ui/button";
@@ -7,11 +16,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getApiKey, setApiKey } from "@/lib/api";
 
-const PAGES = [
-  { to: "/", label: "Overview" },
-  { to: "/calls", label: "Calls" },
-  { to: "/usage", label: "Usage" },
-  { to: "/playground", label: "Playground" },
+const PAGES: { to: string; label: string; icon: LucideIcon }[] = [
+  { to: "/", label: "Overview", icon: LayoutDashboard },
+  { to: "/calls", label: "Calls", icon: ScrollText },
+  { to: "/usage", label: "Usage", icon: ChartColumn },
+  { to: "/playground", label: "Playground", icon: FlaskConical },
 ];
 
 function useTheme() {
@@ -88,13 +97,14 @@ export function AppShell() {
                 to={page.to}
                 end={page.to === "/"}
                 className={({ isActive }) =>
-                  `rounded-md px-3 py-1.5 transition-colors ${
+                  `inline-flex items-center gap-2 rounded-md px-3 py-1.5 transition-colors ${
                     isActive
                       ? "bg-secondary font-medium text-foreground"
                       : "text-muted-foreground hover:text-foreground"
                   }`
                 }
               >
+                <page.icon className="size-4 shrink-0" aria-hidden />
                 {page.label}
               </NavLink>
             ))}

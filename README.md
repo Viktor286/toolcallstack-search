@@ -312,7 +312,7 @@ update their counters with a delay, so compare over windows of minutes or more.
 
 | Page       | Shows                                                                                  |
 | ---------- | -------------------------------------------------------------------------------------- |
-| Overview   | Gateway status and, per provider, health, latency, balance and budget use.             |
+| Overview   | Gateway status, a 24-hour summary and, per provider, health, latency, balance, budget. |
 | Calls      | The call log with filters; a call opens to its timing breakdown, attempts and results. |
 | Usage      | Calls over time, typical latency and cost per provider, and the per-key cost check.    |
 | Playground | Run a query against one provider or several at once and compare.                       |

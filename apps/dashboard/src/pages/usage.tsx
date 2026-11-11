@@ -1,9 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
+import {
+  Activity,
+  ChartColumn,
+  CircleDollarSign,
+  Layers,
+  Scale,
+  SearchX,
+  Timer,
+  TriangleAlert,
+} from "lucide-react";
 import { useState } from "react";
 import { BarList } from "@/components/charts/bar-list";
 import { StackedTimeBars } from "@/components/charts/stacked-time-bars";
 import { ProviderName } from "@/components/provider-name";
 import { PageTitle, QueryError } from "@/components/query-state";
+import { Tile } from "@/components/tile";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -39,18 +50,6 @@ function select(id: (typeof RANGES)[number]["id"]) {
   const range = RANGES.find((item) => item.id === id)!;
   const to = new Date();
   return { range, from: new Date(to.getTime() - range.hours * 3_600_000), to };
-}
-
-function Tile({ label, value, note }: { label: string; value: string; note?: string }) {
-  return (
-    <Card>
-      <CardContent>
-        <div className="text-sm text-muted-foreground">{label}</div>
-        <div className="mt-1 text-2xl font-semibold">{value}</div>
-        {note && <div className="mt-0.5 text-xs text-muted-foreground">{note}</div>}
-      </CardContent>
-    </Card>
-  );
 }
 
 export function UsagePage() {
@@ -140,13 +139,15 @@ export function UsagePage() {
         // While a new range loads, the previous render stays in place, dimmed.
         <div className={`space-y-4 transition-opacity ${stats.isFetching ? "opacity-60" : ""}`}>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <Tile label="Calls" value={compact(calls)} />
+            <Tile icon={Activity} label="Calls" value={compact(calls)} />
             <Tile
+              icon={TriangleAlert}
               label="Failed"
               value={percent(failures, calls)}
               note={`${compact(failures)} of ${compact(calls)} calls`}
             />
             <Tile
+              icon={CircleDollarSign}
               label="Cost"
               value={usd(cost)}
               note={
@@ -155,12 +156,13 @@ export function UsagePage() {
                   : "list price"
               }
             />
-            <Tile label="Providers used" value={String(providers.length)} />
+            <Tile icon={Layers} label="Providers used" value={String(providers.length)} />
           </div>
 
           {calls === 0 ? (
             <Card>
               <CardContent className="py-10 text-center text-sm text-muted-foreground">
+                <SearchX className="mx-auto mb-2 size-6" aria-hidden />
                 No calls in this period. Run a search from the Playground to see it here.
               </CardContent>
             </Card>
@@ -168,7 +170,10 @@ export function UsagePage() {
             <>
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Calls per {range.bucket}</CardTitle>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <ChartColumn className="size-4 text-muted-foreground" aria-hidden />
+                    Calls per {range.bucket}
+                  </CardTitle>
                   <CardDescription>By provider. Times are in your local time zone.</CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -184,7 +189,10 @@ export function UsagePage() {
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">Typical latency</CardTitle>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Timer className="size-4 text-muted-foreground" aria-hidden />
+                      Typical latency
+                    </CardTitle>
                     <CardDescription>
                       Median of successful calls, with the slowest {range.bucket}'s 95th percentile.
                     </CardDescription>
@@ -207,7 +215,10 @@ export function UsagePage() {
                 </Card>
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">Cost</CardTitle>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <CircleDollarSign className="size-4 text-muted-foreground" aria-hidden />
+                      Cost
+                    </CardTitle>
                     <CardDescription>
                       Reported by the provider where it says, otherwise the list-price estimate.
                     </CardDescription>
@@ -234,7 +245,10 @@ export function UsagePage() {
           {usage.data && usage.data.providers.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Cost check per API key</CardTitle>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Scale className="size-4 text-muted-foreground" aria-hidden />
+                  Cost check per API key
+                </CardTitle>
                 <CardDescription>
                   What the gateway counted against what each provider's account says was spent
                   between its first and last balance snapshot in the period.

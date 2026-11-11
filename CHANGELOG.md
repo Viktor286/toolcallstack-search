@@ -3,6 +3,14 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org); while
 the version is below 1.0 a minor release may change the API.
 
+## Unreleased
+
+- Dashboard Overview: a summary strip (providers by health, calls, failures and cost over 24 hours),
+  a 24-hour calls chart per provider, providers ordered by how much attention they need with idle
+  ones collapsed, balance runway and stale-snapshot hints, amber budget meters with a "cap reached
+  at" forecast, links from a provider to its calls, and a manual refresh that keeps the last data
+  on screen when the gateway cannot be reached.
+
 ## 0.4.0
 
 - Demo mode: with no provider key the gateway offers two built-in providers that answer with

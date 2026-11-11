@@ -1,3 +1,4 @@
+import { DatabaseZap, KeyRound, WifiOff } from "lucide-react";
 import { ApiKeyForm } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ApiError } from "@/lib/api";
@@ -8,7 +9,10 @@ export function QueryError({ error }: { error: unknown }) {
     return (
       <Card className="max-w-md">
         <CardHeader>
-          <CardTitle>This gateway needs an API key</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <KeyRound className="size-4 text-muted-foreground" aria-hidden />
+            This gateway needs an API key
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <ApiKeyForm />
@@ -20,7 +24,10 @@ export function QueryError({ error }: { error: unknown }) {
     return (
       <Card className="max-w-xl">
         <CardHeader>
-          <CardTitle>No call log</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <DatabaseZap className="size-4 text-muted-foreground" aria-hidden />
+            No call log
+          </CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
           The gateway is running without a database, so it keeps no history. Set{" "}
@@ -33,7 +40,10 @@ export function QueryError({ error }: { error: unknown }) {
   return (
     <Card className="max-w-xl">
       <CardHeader>
-        <CardTitle>Could not reach the gateway</CardTitle>
+        <CardTitle className="flex items-center gap-2">
+          <WifiOff className="size-4 text-muted-foreground" aria-hidden />
+          Could not reach the gateway
+        </CardTitle>
       </CardHeader>
       <CardContent className="text-sm text-muted-foreground">
         {error instanceof Error ? error.message : "Unknown error"}. Check that the gateway is
