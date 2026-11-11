@@ -36,7 +36,29 @@ jobs:
       - run: pnpm build
 
   docker:
-    runs-on: ubuntu-latest
+    # Both platforms the release publishes, each built on its own native runner, so an arm64-only
+    # failure shows up in the pull request rather than when a tag is pushed.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    name: docker (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t toolcallstack-search .
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          tags: toolcallstack-search:ci-${{ matrix.arch }}
+          # Layers are cached per platform, so the two builds do not evict each other.
+          cache-from: type=gha,scope=ci-${{ matrix.arch }}
+          cache-to: type=gha,scope=ci-${{ matrix.arch }},mode=max
