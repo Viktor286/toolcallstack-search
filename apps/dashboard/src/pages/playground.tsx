@@ -15,7 +15,11 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import { CodeBlock, CopyButton, DownloadButton } from "@/components/json-view";
 import { Comparison } from "@/components/playground/comparison";
-import { ResponseCard, ResponseSkeleton } from "@/components/playground/response-card";
+import {
+  ResponseCard,
+  ResponseSkeleton,
+  ResponseStats,
+} from "@/components/playground/response-card";
 import { ProviderName } from "@/components/provider-name";
 import { PageTitle, QueryError } from "@/components/query-state";
 import { Button } from "@/components/ui/button";
@@ -773,7 +777,20 @@ export function PlaygroundPage() {
             </div>
           </TabsContent>
 
-          <TabsContent value="json" className="pt-2">
+          <TabsContent value="json" className="space-y-4 pt-2">
+            {/* The figures stay in view whichever way the answer is read. */}
+            <div
+              className={`grid items-start gap-4 ${run.responses.length > 1 ? "lg:grid-cols-2" : ""}`}
+            >
+              {run.responses.map((response, index) => (
+                <ResponseStats
+                  key={response.id}
+                  name={names[response.provider]}
+                  response={response}
+                  summary={summaries[index]!}
+                />
+              ))}
+            </div>
             <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
               <Card className="min-w-0">
                 <CardHeader>

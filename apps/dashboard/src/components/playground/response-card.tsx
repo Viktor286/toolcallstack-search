@@ -61,66 +61,98 @@ function JsonPane({ value, name }: { value: unknown; name: string }) {
   );
 }
 
-interface Props {
+interface StatsProps {
   response: SearchResponse;
   /** The provider's display name, used unless the response carries its own label. */
   name?: string;
   summary: ResponseSummary;
+}
+
+/** Provider, outcome and figures of one answer: the top of its card in every view. */
+function StatsHeader({ response, name, summary }: StatsProps) {
+  const cost = callCost(response.usage);
+  return (
+    <CardHeader>
+      <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-base">
+        <ProviderName
+          id={response.provider}
+          label={response.label === response.provider ? name : response.label}
+        />
+        <StatusLabel
+          kind={response.ok ? "ok" : "failed"}
+          label={response.ok ? (response.cache?.hit ? "OK · cached" : "OK") : response.error?.type}
+        />
+      </CardTitle>
+      {/* Wraps by what fits rather than a fixed column count, so an optional figure such as
+          Credits joins the first row while there is room on it. */}
+      <dl className="flex flex-wrap gap-x-8 gap-y-3 pt-2">
+        <Metric icon={Timer} label="Total time" help="totalTime">
+          {ms(response.timing.totalMs)}
+        </Metric>
+        <Metric icon={CircleDollarSign} label={`Cost (${response.usage.costSource})`} help="cost">
+          {cost === null ? "unknown" : usd(cost)}
+        </Metric>
+        <Metric icon={ListOrdered} label="Results" help="results">
+          {summary.results}
+        </Metric>
+        <Metric icon={CalendarClock} label="With a date" help="dated">
+          {summary.dated} of {summary.results}
+        </Metric>
+        {response.usage.credits !== undefined && (
+          <Metric icon={Coins} label="Credits" help="credits">
+            {response.usage.credits}
+          </Metric>
+        )}
+        {response.retries.count > 0 && (
+          <Metric icon={RotateCw} label="Retries" help="retries">
+            {response.retries.count} ({ms(response.retries.backoffMs)} backoff)
+          </Metric>
+        )}
+        {response.timing.queuedMs >= 1 && (
+          <Metric icon={Hourglass} label="Queued" help="queued">
+            {ms(response.timing.queuedMs)}
+          </Metric>
+        )}
+      </dl>
+    </CardHeader>
+  );
+}
+
+/** Where the time went; shown with the figures above whichever view is open. */
+function Timing({ response }: { response: SearchResponse }) {
+  return response.timing.phases ? (
+    <PhaseBar queuedMs={response.timing.queuedMs} phases={response.timing.phases} />
+  ) : null;
+}
+
+/** One answer's figures and timing alone, for views that show the body elsewhere. */
+export function ResponseStats(props: StatsProps) {
+  return (
+    <Card className="min-w-0">
+      <StatsHeader {...props} />
+      {props.response.timing.phases && (
+        <CardContent>
+          <Timing response={props.response} />
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+interface Props extends StatsProps {
   alsoIn?: (url: string) => string[];
 }
 
 /** One provider's answer: what it cost and how long it took, then results, JSON or the raw body. */
 export function ResponseCard({ response, name, summary, alsoIn }: Props) {
-  const cost = callCost(response.usage);
   const { raw, ...unified } = response;
   const file = `${response.label}-${response.id.slice(0, 8)}`;
 
   return (
     <Card className="min-w-0">
-      <CardHeader>
-        <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-base">
-          <ProviderName
-            id={response.provider}
-            label={response.label === response.provider ? name : response.label}
-          />
-          <StatusLabel
-            kind={response.ok ? "ok" : "failed"}
-            label={
-              response.ok ? (response.cache?.hit ? "OK · cached" : "OK") : response.error?.type
-            }
-          />
-        </CardTitle>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 pt-2 sm:grid-cols-4">
-          <Metric icon={Timer} label="Total time" help="totalTime">
-            {ms(response.timing.totalMs)}
-          </Metric>
-          <Metric icon={CircleDollarSign} label={`Cost (${response.usage.costSource})`} help="cost">
-            {cost === null ? "unknown" : usd(cost)}
-          </Metric>
-          <Metric icon={ListOrdered} label="Results" help="results">
-            {summary.results}
-          </Metric>
-          <Metric icon={CalendarClock} label="With a date" help="dated">
-            {summary.dated} of {summary.results}
-          </Metric>
-          {response.usage.credits !== undefined && (
-            <Metric icon={Coins} label="Credits" help="credits">
-              {response.usage.credits}
-            </Metric>
-          )}
-          {response.retries.count > 0 && (
-            <Metric icon={RotateCw} label="Retries" help="retries">
-              {response.retries.count} ({ms(response.retries.backoffMs)} backoff)
-            </Metric>
-          )}
-          {response.timing.queuedMs >= 1 && (
-            <Metric icon={Hourglass} label="Queued" help="queued">
-              {ms(response.timing.queuedMs)}
-            </Metric>
-          )}
-        </dl>
-      </CardHeader>
-      <CardContent>
+      <StatsHeader response={response} name={name} summary={summary} />
+      <CardContent className="space-y-4">
+        <Timing response={response} />
         <Tabs defaultValue="results">
           <TabsList>
             <TabsTrigger value="results">Results</TabsTrigger>
@@ -146,9 +178,6 @@ export function ResponseCard({ response, name, summary, alsoIn }: Props) {
                   </li>
                 ))}
               </ul>
-            )}
-            {response.timing.phases && (
-              <PhaseBar queuedMs={response.timing.queuedMs} phases={response.timing.phases} />
             )}
             {response.ok && <ResultList results={response.results} alsoIn={alsoIn} />}
           </TabsContent>
