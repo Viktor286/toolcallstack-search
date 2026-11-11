@@ -6,6 +6,7 @@ import {
   curlCommand,
   formFromParams,
   formToParams,
+  hasAdvanced,
   normalizeUrl,
   parseOptions,
   sharedResults,
@@ -159,5 +160,17 @@ describe("sharing a set-up", () => {
     expect(snapshotName("Fed: rate decision?", new Date("2026-11-10T14:05:09.123Z"))).toBe(
       "search-fed-rate-decision-2026-11-10T14-05-09.json",
     );
+  });
+});
+
+describe("hasAdvanced", () => {
+  it("opens the panel only for a field inside it", () => {
+    expect(hasAdvanced(form)).toBe(false);
+    // Freshness and result count sit outside the panel.
+    expect(hasAdvanced({ ...form, freshness: "day", maxResults: 10 })).toBe(false);
+    expect(hasAdvanced(formFromParams(new URLSearchParams("q=x&country=US")))).toBe(true);
+    expect(hasAdvanced({ ...form, includeRaw: true })).toBe(true);
+    expect(hasAdvanced({ ...form, options: { brave: " " } })).toBe(false);
+    expect(hasAdvanced({ ...form, options: { brave: '{"safesearch":"off"}' } })).toBe(true);
   });
 });

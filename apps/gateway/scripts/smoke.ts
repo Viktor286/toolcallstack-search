@@ -3,10 +3,13 @@
  * provider it has a key for. Exits non-zero if any provider fails or returns
  * nothing. Usage: pnpm smoke ["query"]
  */
+import { parseApiKeys } from "../src/config.ts";
 import type { BatchResponse } from "../src/schema.ts";
 
 const base = process.env.GATEWAY_URL ?? `http://localhost:${process.env.PORT ?? 4310}`;
-const token = process.env.GATEWAY_API_KEY ?? process.env.GATEWAY_API_KEYS?.split(",")[0]?.trim();
+// The first configured key, without the `name:` prefix a named key has.
+const token =
+  process.env.GATEWAY_API_KEY ?? parseApiKeys(process.env.GATEWAY_API_KEYS ?? "")[0]?.key;
 const query = process.argv[2] ?? "Federal Reserve interest rate decision";
 
 async function call<T>(path: string, body?: unknown): Promise<T> {

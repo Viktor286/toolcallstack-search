@@ -95,6 +95,11 @@ export class BudgetTracker {
     state.month = { ...month };
   }
 
+  /** Whether the provider has a `minRemaining` floor, which needs balance snapshots. */
+  hasFloor(provider: string): boolean {
+    return this.#budgets[provider]?.minRemaining !== undefined;
+  }
+
   setBalance(provider: string, remaining: number | null): void {
     this.#state(provider).remaining = remaining;
   }

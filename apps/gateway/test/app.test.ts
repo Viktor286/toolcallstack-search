@@ -1017,3 +1017,37 @@ describe("introspection", () => {
     );
   });
 });
+
+describe("minRemaining budgets", () => {
+  it("hold to the account balance without a database", async () => {
+    const app = await buildApp({
+      config: loadConfig({
+        LOG_LEVEL: "silent",
+        BALANCE_POLL_SECONDS: "60",
+        PROVIDER_BUDGETS: '{"tavily":{"minRemaining":100}}',
+      }),
+      store: null,
+      env,
+      transport: async (request) => ({
+        status: 200,
+        headers: {},
+        phases,
+        // 1000 credits, 950 used: 50 left, under the floor of 100.
+        text: JSON.stringify(
+          request.url.endsWith("/usage") ? { key: { usage: 950, limit: 1000 } } : tavilyBody,
+        ),
+      }),
+    });
+    close = () => app.close();
+    await app.ready();
+    await vi.waitFor(async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/search",
+        payload: { provider: "tavily", query: "hello" },
+      });
+      expect(response.statusCode).toBe(429);
+      expect(response.json().error.type).toBe("budget_exceeded");
+    });
+  });
+});

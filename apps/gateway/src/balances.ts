@@ -10,7 +10,8 @@ import { keyFingerprint } from "./util.ts";
 export interface BalancePollerDeps {
   transport: Transport;
   env: Record<string, string | undefined>;
-  store: Store;
+  /** Where snapshots are kept; without one, balances only feed metrics and budgets. */
+  store: Store | null;
   metrics: Metrics;
   /** Told about each fresh balance, for `minRemaining` budgets. */
   budget?: BudgetTracker;
@@ -46,13 +47,19 @@ export async function pollBalances(deps: BalancePollerDeps): Promise<number> {
         const balance =
           response.status === 200 ? provider.balance.parse(JSON.parse(response.text)) : null;
         if (!balance) throw new Error(`unexpected balance response (${response.status})`);
-        await deps.store.saveBalance({
+        await deps.store?.saveBalance({
           ...balance,
           provider: provider.id,
           keyFingerprint: keyFingerprint(apiKey),
           takenAt: new Date(),
         });
         deps.budget?.setBalance(provider.id, balance.remaining);
+        if (balance.remaining === null && deps.budget?.hasFloor(provider.id)) {
+          deps.log.warn(
+            { provider: provider.id },
+            "minRemaining cannot apply: this provider reports what was used, not what is left",
+          );
+        }
         if (balance.remaining !== null) {
           deps.metrics.balance.set(
             { provider: provider.id, unit: balance.unit },

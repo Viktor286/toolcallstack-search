@@ -20,6 +20,23 @@ const jsonByProvider = <T extends z.ZodType>(value: T) =>
       }
     });
 
+/**
+ * Comma-separated gateway API keys. An entry may be `name:token` so calls are attributed to
+ * that client; a bare token gets a generated name.
+ */
+export function parseApiKeys(value: string): { name: string; key: string }[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const named = /^([\w.-]+):(.+)$/.exec(entry);
+      return named
+        ? { name: named[1]!, key: named[2]! }
+        : { name: `key-${keyFingerprint(entry)}`, key: entry };
+    });
+}
+
 const budgetCaps = z.object({
   calls: z.number().int().min(0).optional(),
   usd: z.number().min(0).optional(),
@@ -30,25 +47,8 @@ const configSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
   PORT: z.coerce.number().int().default(4310),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
-  /**
-   * Comma-separated bearer tokens allowed to call the gateway; empty disables auth. An entry may
-   * be `name:token` so calls are attributed to that client; a bare token gets a generated name.
-   */
-  GATEWAY_API_KEYS: z
-    .string()
-    .default("")
-    .transform((value) =>
-      value
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .map((entry) => {
-          const named = /^([\w.-]+):(.+)$/.exec(entry);
-          return named
-            ? { name: named[1]!, key: named[2]! }
-            : { name: `key-${keyFingerprint(entry)}`, key: entry };
-        }),
-    ),
+  /** Bearer tokens allowed to call the gateway, see parseApiKeys; empty disables auth. */
+  GATEWAY_API_KEYS: z.string().default("").transform(parseApiKeys),
   /**
    * Built-in demo providers that answer without any network or account. `auto` offers them
    * only while no real provider has an API key.

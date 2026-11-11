@@ -40,6 +40,7 @@ import {
   curlCommand,
   formFromParams,
   formToParams,
+  hasAdvanced,
   normalizeUrl,
   parseOptions,
   sharedResults,
@@ -105,9 +106,8 @@ export function PlaygroundPage() {
 
   // The address bar seeds the form once; it is rewritten on every run.
   const [stored, setStored] = useState<PlaygroundForm>(() => formFromParams(searchParams));
-  const [advanced, setAdvanced] = useState(
-    () => formToParams({ ...stored, query: "", providers: [], topic: "general" }).size > 1,
-  );
+  // A shared link that sets a hidden field opens the panel, so no filter applies unseen.
+  const [advanced, setAdvanced] = useState(() => hasAdvanced(stored));
   const [view, setView] = useState("parsed");
 
   // Until the user picks, the first configured provider is selected.

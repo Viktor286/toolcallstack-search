@@ -6,8 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { pollBalances } from "../src/balances.ts";
 import { estimateCost, withCost } from "../src/cost.ts";
 import { ProviderLimiter, QueueTimeoutError } from "../src/limiter.ts";
+import { BudgetTracker } from "../src/budget.ts";
+import { parseApiKeys } from "../src/config.ts";
 import { createMetrics } from "../src/metrics.ts";
 import { providersById } from "../src/providers/index.ts";
+import { PostgresLimiter } from "../src/shared-limiter.ts";
 import { spentBetween, type BalanceSnapshot, type Store } from "../src/store.ts";
 import { createTransport } from "../src/transport.ts";
 import { VERSION } from "../src/version.ts";
@@ -104,6 +107,31 @@ describe("ProviderLimiter", () => {
         throw new Error("boom");
       }),
     ).rejects.toThrow("boom");
+  });
+});
+
+describe("PostgresLimiter", () => {
+  it("falls back to this instance's own limits while Postgres is unreachable", async () => {
+    const down = { begin: () => Promise.reject(new Error("connection refused")) };
+    const errors: unknown[] = [];
+    const limiter = new PostgresLimiter(down as never, { a: { rpm: 1 } }, 60_000, (error) =>
+      errors.push(error),
+    );
+    expect(await limiter.run("a", 1000, async (queuedMs) => queuedMs)).toBeGreaterThanOrEqual(0);
+    // The in-memory window still holds: a second request within the minute gets no slot.
+    await expect(limiter.run("a", 0, async () => "ran")).rejects.toBeInstanceOf(QueueTimeoutError);
+    expect(errors).toHaveLength(2);
+    expect(limiter.depth("a")).toBe(0);
+  });
+});
+
+describe("parseApiKeys", () => {
+  it("reads named and bare keys", () => {
+    expect(parseApiKeys(" alice:sk-1, bob:sk:with:colons ,, bare ")).toEqual([
+      { name: "alice", key: "sk-1" },
+      { name: "bob", key: "sk:with:colons" },
+      { name: expect.stringMatching(/^key-[0-9a-f]{8}$/), key: "bare" },
+    ]);
   });
 });
 
@@ -341,6 +369,41 @@ describe("balances", () => {
     expect(await metrics.registry.metrics()).toContain(
       'toolcallstack_search_balance{provider="you",unit="usd"} 9.94',
     );
+  });
+
+  it("feeds budgets without a store, and warns when a floor cannot apply", async () => {
+    const warnings: unknown[] = [];
+    const budget = new BudgetTracker({ exa: { minRemaining: 1 }, you: { minRemaining: 5 } });
+    const count = await pollBalances({
+      env: { EXA_API_KEY: "e", EXA_SERVICE_KEY: "s", YOU_API_KEY: "y" },
+      store: null,
+      metrics: createMetrics(),
+      budget,
+      log: { warn: (...args: unknown[]) => void warnings.push(args) } as never,
+      transport: async (request) => ({
+        status: 200,
+        headers: {},
+        phases: {
+          dnsMs: null,
+          connectMs: null,
+          tlsMs: null,
+          ttfbMs: 1,
+          downloadMs: 1,
+          connectionReused: true,
+        },
+        text: JSON.stringify(
+          request.url.includes("exa.ai")
+            ? { total_cost_usd: 3 }
+            : { data: { attributes: { balance: 300 } } },
+        ),
+      }),
+    });
+    expect(count).toBe(2);
+    // You.com has $3 left, under its floor of $5.
+    expect(budget.blocked("you")).toContain("at or below the floor");
+    // Exa reports dollars used, so its floor can never be checked.
+    expect(budget.blocked("exa")).toBeNull();
+    expect(JSON.stringify(warnings)).toContain("exa");
   });
 
   it("computes spend from whichever counter is available", () => {

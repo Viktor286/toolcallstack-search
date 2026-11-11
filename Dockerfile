@@ -1,8 +1,9 @@
 # Node 24 runs the gateway's TypeScript sources directly; only the dashboard is built.
 FROM node:24-slim AS base
-RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# The pnpm version pinned in package.json. Not through corepack, which Node 25 no longer ships.
+RUN npm install -g "pnpm@$(node -p 'require("./package.json").packageManager.split("@")[1]')"
 COPY apps/gateway/package.json apps/gateway/
 COPY apps/dashboard/package.json apps/dashboard/
 

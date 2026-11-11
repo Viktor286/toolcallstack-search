@@ -249,6 +249,17 @@ export function downloadJson(name: string, value: unknown): void {
   URL.revokeObjectURL(url);
 }
 
+/** Whether a field of the collapsible "more options" panel is set, so it should start open. */
+export function hasAdvanced(form: PlaygroundForm): boolean {
+  return (
+    [form.includeDomains, form.excludeDomains, form.startDate, form.endDate, form.country].some(
+      (value) => value.trim() !== "",
+    ) ||
+    form.includeRaw ||
+    Object.values(form.options).some((text) => text.trim() !== "")
+  );
+}
+
 const LIST_PARAMS = ["topic", "freshness", "country", "startDate", "endDate"] as const;
 
 /** Form state as a query string, so a set-up can be bookmarked or shared. Nothing runs on load. */

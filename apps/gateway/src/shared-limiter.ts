@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
-import { QueueTimeoutError, type Limiter, type Limits } from "./limiter.ts";
+import { ProviderLimiter, QueueTimeoutError, type Limiter, type Limits } from "./limiter.ts";
 
 // A slot whose holder never released it (a crashed instance) stops counting after this long.
 const STALE_SECONDS = 300;
 // How often a call waiting for a concurrency slot looks again.
 const POLL_MS = 50;
 
+/** A slot taken, or how long to wait before asking again. */
+type Acquired = { id: string } | { retryMs: number };
+
 /**
  * The same outbound limits as ProviderLimiter, but counted in Postgres so that
  * several gateway instances share one budget of requests per provider. Each
  * upstream request takes a row; the count of recent rows is the rolling
  * window, the count of unreleased rows is the concurrency. Waiting calls poll,
- * so the order between instances is not strictly first-come.
+ * so the order between instances is not strictly first-come. While Postgres
+ * cannot be reached, calls fall back to this instance's own in-memory limits.
  */
 export class PostgresLimiter implements Limiter {
   readonly #sql: postgres.Sql;
@@ -20,20 +24,30 @@ export class PostgresLimiter implements Limiter {
   readonly #windowSeconds: number;
   readonly #instance = randomUUID();
   readonly #waiting = new Map<string, number>();
+  readonly #fallback: ProviderLimiter;
+  readonly #onError: (error: unknown) => void;
 
-  constructor(sql: postgres.Sql, limits: Record<string, Limits | undefined>, windowMs = 60_000) {
+  constructor(
+    sql: postgres.Sql,
+    limits: Record<string, Limits | undefined>,
+    windowMs = 60_000,
+    /** Told when Postgres fails and a call falls back to the in-memory limits. */
+    onError: (error: unknown) => void = () => {},
+  ) {
     this.#sql = sql;
     this.#limits = limits;
     this.#windowSeconds = windowMs / 1000;
+    this.#fallback = new ProviderLimiter(limits, windowMs);
+    this.#onError = onError;
   }
 
   /** Requests of this instance waiting for a slot. */
   depth(provider: string): number {
-    return this.#waiting.get(provider) ?? 0;
+    return (this.#waiting.get(provider) ?? 0) + this.#fallback.depth(provider);
   }
 
   /** Take a slot if the limits allow; otherwise say how long to wait before asking again. */
-  async #acquire(provider: string, limit: Limits): Promise<{ id: string } | { retryMs: number }> {
+  async #acquire(provider: string, limit: Limits): Promise<Acquired> {
     return this.#sql.begin(async (tx) => {
       // One decision at a time per provider, across all instances.
       await tx`SELECT pg_advisory_xact_lock(hashtext(${`limiter:${provider}`}))`;
@@ -72,10 +86,17 @@ export class PostgresLimiter implements Limiter {
 
     const enqueued = performance.now();
     let slot: string | undefined;
-    this.#waiting.set(provider, this.depth(provider) + 1);
+    let outage: unknown;
+    this.#waiting.set(provider, (this.#waiting.get(provider) ?? 0) + 1);
     try {
       while (slot === undefined) {
-        const outcome = await this.#acquire(provider, limit);
+        let outcome: Acquired;
+        try {
+          outcome = await this.#acquire(provider, limit);
+        } catch (error) {
+          outage = error;
+          break;
+        }
         if ("id" in outcome) {
           slot = outcome.id;
           break;
@@ -89,7 +110,16 @@ export class PostgresLimiter implements Limiter {
         await new Promise((resolve) => setTimeout(resolve, Math.min(outcome.retryMs, left)));
       }
     } finally {
-      this.#waiting.set(provider, this.depth(provider) - 1);
+      this.#waiting.set(provider, (this.#waiting.get(provider) ?? 1) - 1);
+    }
+
+    if (slot === undefined) {
+      // A database outage must not fail searches: hold to this instance's own limits instead.
+      this.#onError(outage);
+      const waited = performance.now() - enqueued;
+      return this.#fallback.run(provider, Math.max(0, maxQueueMs - waited), (queuedMs) =>
+        task(waited + queuedMs),
+      );
     }
 
     try {

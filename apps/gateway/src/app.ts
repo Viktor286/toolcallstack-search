@@ -14,7 +14,7 @@ import {
   validatorCompiler,
   type ZodTypeProvider,
 } from "fastify-type-provider-zod";
-import { startBalancePoller } from "./balances.ts";
+import { balanceCredential, startBalancePoller } from "./balances.ts";
 import { BudgetTracker } from "./budget.ts";
 import type { Config } from "./config.ts";
 import { HealthTracker } from "./health.ts";
@@ -61,7 +61,10 @@ export async function buildApp(options: AppOptions) {
     (config.DEMO_MODE === "auto" &&
       !realProviders.some((provider) => (options.env ?? process.env)[provider.envVar]));
   // The demo providers are "configured" through this variable, like a real one through its key.
-  const env = { ...(options.env ?? process.env), DEMO_MODE: demo ? "on" : undefined };
+  const env: Record<string, string | undefined> = {
+    ...(options.env ?? process.env),
+    DEMO_MODE: demo ? "on" : undefined,
+  };
   const providers = demo ? allProviders : realProviders;
   const transport = withDemo(options.transport ?? createTransport());
   const metrics = createMetrics();
@@ -81,7 +84,12 @@ export async function buildApp(options: AppOptions) {
   }
   const limiter: Limiter =
     config.SHARED_STATE && options.sql
-      ? new PostgresLimiter(options.sql, limits, options.limitWindowMs)
+      ? new PostgresLimiter(options.sql, limits, options.limitWindowMs, (error) =>
+          app.log.warn(
+            { err: error },
+            "shared rate limits are unreachable in Postgres; this call uses this instance's own limits",
+          ),
+        )
       : new ProviderLimiter(limits, options.limitWindowMs);
   const health = new HealthTracker();
   const budget = new BudgetTracker(config.PROVIDER_BUDGETS);
@@ -312,13 +320,6 @@ export async function buildApp(options: AppOptions) {
         );
       }
 
-      if (config.BALANCE_POLL_SECONDS > 0) {
-        stopBalancePoller = startBalancePoller(
-          { transport, env, store, metrics, budget, log: app.log },
-          config.BALANCE_POLL_SECONDS,
-        );
-      }
-
       const retention = {
         callDays: config.CALL_LOG_RETENTION_DAYS,
         rawDays: config.RAW_RETENTION_DAYS,
@@ -336,6 +337,32 @@ export async function buildApp(options: AppOptions) {
       }
     });
   }
+
+  // A `minRemaining` floor can only be held to with a balance that cannot be read, so say so.
+  for (const provider of realProviders) {
+    if (!budget.hasFloor(provider.id) || !env[provider.envVar]) continue;
+    const problem = !provider.balance
+      ? "the provider has no balance endpoint"
+      : !balanceCredential(provider, env)
+        ? `${provider.balance.credentialEnvVar} is not set`
+        : config.BALANCE_POLL_SECONDS === 0
+          ? "BALANCE_POLL_SECONDS is 0"
+          : null;
+    if (problem) {
+      app.log.warn({ provider: provider.id }, `minRemaining cannot apply: ${problem}`);
+    }
+  }
+  // Snapshots need the call log, but a `minRemaining` floor needs balances even without one.
+  const floors = realProviders.some((provider) => budget.hasFloor(provider.id));
+  if (config.BALANCE_POLL_SECONDS > 0 && (store || floors)) {
+    app.addHook("onReady", async () => {
+      stopBalancePoller = startBalancePoller(
+        { transport, env, store, metrics, budget, log: app.log },
+        config.BALANCE_POLL_SECONDS,
+      );
+    });
+  }
+
   app.addHook("onClose", async () => {
     stopBalancePoller?.();
     for (const timer of timers) clearInterval(timer);
