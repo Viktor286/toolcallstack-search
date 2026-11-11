@@ -18,7 +18,7 @@ import { balanceCredential, startBalancePoller } from "./balances.ts";
 import { BudgetTracker } from "./budget.ts";
 import { ResponseCache } from "./cache.ts";
 import type { Config } from "./config.ts";
-import { HealthTracker } from "./health.ts";
+import { HEALTH_WINDOW, HealthTracker } from "./health.ts";
 import { ProviderLimiter, type Limiter } from "./limiter.ts";
 import { createMetrics } from "./metrics.ts";
 import { demoProviders, withDemo } from "./providers/demo.ts";
@@ -285,7 +285,7 @@ export async function buildApp(options: AppOptions) {
       const { dayStart, monthStart } = budget.windows();
       const [spends, outcomes] = await Promise.all([
         store.spendSince(dayStart, monthStart),
-        store.recentOutcomes(20),
+        store.recentOutcomes(HEALTH_WINDOW),
       ]);
       for (const provider of allProviders) {
         const spend = spends.find((entry) => entry.provider === provider.id);
@@ -323,6 +323,22 @@ export async function buildApp(options: AppOptions) {
           { err: error },
           "could not load spend from the call log; budgets start at zero",
         );
+      }
+      // Health continues from the last logged calls too, so a restart does not forget a
+      // provider that was failing, or report "never" for one that was answering.
+      if (!config.SHARED_STATE) {
+        try {
+          const outcomes = await store.recentOutcomes(HEALTH_WINDOW);
+          for (const provider of allProviders) {
+            const own = outcomes.filter((outcome) => outcome.provider === provider.id);
+            if (own.length > 0) health.replace(provider.id, own);
+          }
+        } catch (error) {
+          app.log.error(
+            { err: error },
+            "could not load provider health from the call log; it starts empty",
+          );
+        }
       }
 
       const retention = {

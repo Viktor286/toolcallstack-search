@@ -28,6 +28,8 @@ the version is below 1.0 a minor release may change the API.
   runs"; a search can be cancelled and shows how long it has waited; a cached answer can be fetched
   again fresh; copied links keep per-provider options; result counts go up to the chosen providers'
   limits, with a note when one returns fewer; the examples stay available after typing a query.
+- Provider health is restored from each provider's last 20 logged calls at start, as spend already
+  was, so a restart no longer shows "No calls" and "Last success: never" next to the day's traffic.
 - `minRemaining` budgets work without a database, and the gateway warns when one cannot apply.
 - When shared state cannot reach Postgres, calls fall back to each instance's own rate limits
   instead of failing.

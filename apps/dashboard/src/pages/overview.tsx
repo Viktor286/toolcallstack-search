@@ -29,7 +29,7 @@ import {
   type Status,
   type UsageResponse,
 } from "@/lib/api";
-import { ago, compact, duration, percent, usd } from "@/lib/format";
+import { ago, compact, counted, duration, percent, usd } from "@/lib/format";
 import {
   activityByProvider,
   balanceText,
@@ -207,7 +207,7 @@ export function OverviewPage() {
               counts.degraded > 0 && `${counts.degraded} degraded`,
               counts.down > 0 && `${counts.down} down`,
               counts.blocked > 0 && `${counts.blocked} over budget`,
-              counts.idle > 0 && `${counts.idle} without calls since start`,
+              counts.idle > 0 && `${counts.idle} without calls yet`,
             ]
               .filter(Boolean)
               .join(" · ") || "no problems"
@@ -221,7 +221,7 @@ export function OverviewPage() {
               label="Failed, 24 h"
               help="failedShare"
               value={percent(failures, calls)}
-              note={`${compact(failures)} of ${compact(calls)} calls`}
+              note={`${compact(failures)} of ${counted(calls, "call")}`}
             />
             <Tile
               icon={CircleDollarSign}

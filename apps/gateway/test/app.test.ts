@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.ts";
 import { loadConfig } from "../src/config.ts";
-import type { BalanceSnapshot, CallRecord, ProviderSpend, Store } from "../src/store.ts";
+import type {
+  BalanceSnapshot,
+  CallRecord,
+  ProviderOutcome,
+  ProviderSpend,
+  Store,
+} from "../src/store.ts";
 import type { Phases } from "../src/transport.ts";
 
 const env = { TAVILY_API_KEY: "tvly-test", YOU_API_KEY: "you-test" };
@@ -34,6 +40,19 @@ const phases: Phases = {
 
 /** What the call log reports as already spent when an app starts. */
 let seededSpend: ProviderSpend[] = [];
+/** What the call log reports as the latest outcomes when an app starts. */
+let seededOutcomes: ProviderOutcome[] = [];
+
+/** One logged Tavily outcome, as the call log reports it. */
+function outcome(ok: boolean, receivedAt: string): ProviderOutcome {
+  return {
+    provider: "tavily",
+    ok,
+    latencyMs: 300,
+    receivedAt,
+    error: ok ? null : { type: "upstream_error", message: "503" },
+  };
+}
 
 function memoryStore() {
   const calls: CallRecord[] = [];
@@ -47,7 +66,7 @@ function memoryStore() {
     usageByClient: async () => [],
     stats: async () => [],
     spendSince: async () => seededSpend,
-    recentOutcomes: async () => [],
+    recentOutcomes: async () => seededOutcomes,
     cleanup: async () => ({ calls: 0, raws: 0 }),
     ping: async () => {},
     close: async () => {},
@@ -92,6 +111,7 @@ afterEach(async () => {
   await close?.();
   close = undefined;
   seededSpend = [];
+  seededOutcomes = [];
 });
 
 describe("POST /v1/search", () => {
@@ -845,6 +865,25 @@ describe("budgets", () => {
     const refused = (await search(app)).json();
     expect(refused.error.type).toBe("budget_exceeded");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts provider health from the latest calls in the call log", async () => {
+    seededOutcomes = [
+      outcome(true, "2026-11-10T10:00:00.000Z"),
+      outcome(false, "2026-11-10T11:00:00.000Z"),
+    ];
+    const { app } = await setup(async () => json(tavilyBody));
+    close = () => app.close();
+    await app.ready();
+    const providers = (await app.inject({ method: "GET", url: "/v1/status" })).json().providers;
+    expect(providers.find((p: { id: string }) => p.id === "tavily")).toMatchObject({
+      status: "degraded",
+      recentCalls: 2,
+      medianLatencyMs: 300,
+      lastOkAt: "2026-11-10T10:00:00.000Z",
+      lastError: { type: "upstream_error", at: "2026-11-10T11:00:00.000Z" },
+    });
+    expect(providers.find((p: { id: string }) => p.id === "you").status).toBe("unknown");
   });
 
   it("falls back past a provider whose budget is used up", async () => {

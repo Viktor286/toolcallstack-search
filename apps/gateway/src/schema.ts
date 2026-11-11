@@ -317,7 +317,7 @@ const providerHealthSchema = z.object({
   status: z
     .enum(["healthy", "degraded", "down", "unknown"])
     .describe(
-      "From the last 20 calls since start: down after 3 failures in a row, degraded after a failure or below 80% success, unknown before any call",
+      "From the last 20 calls (reloaded from the call log at start when there is one): down after 3 failures in a row, degraded after a failure or below 80% success, unknown before any call",
     ),
   recentCalls: z.number().int(),
   successRate: z.number().nullable(),

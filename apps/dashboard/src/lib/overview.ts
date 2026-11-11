@@ -1,5 +1,5 @@
 import type { ProviderInfo, StatsResponse, Status, UsageResponse } from "./api.ts";
-import { compact, usd } from "./format.ts";
+import { counted, usd } from "./format.ts";
 import { byProviderOrder } from "./providers.ts";
 
 /** Fewer recent calls than this say little about a provider's health. */
@@ -77,7 +77,7 @@ export function attention(provider: ProviderHealth, calls24h: number): number {
   if (provider.status === "down") return 0;
   if (provider.status === "degraded" || provider.budgetBlocked) return 1;
   if (provider.status === "healthy") return 2;
-  // After a restart health is empty even though the call log has traffic.
+  // Without a database health is empty after a restart even though the 24 h stats may show traffic.
   return calls24h > 0 ? 3 : 4;
 }
 
@@ -106,7 +106,7 @@ export function healthCounts(providers: ProviderHealth[]) {
     healthy: count("healthy"),
     degraded: count("degraded"),
     down: count("down"),
-    /** No calls since the gateway started, so nothing to judge yet. */
+    /** No calls to judge: none in the call log, or none since start without one. */
     idle: count("unknown"),
     blocked: configured.filter((provider) => provider.budgetBlocked).length,
   };
@@ -114,7 +114,7 @@ export function healthCounts(providers: ProviderHealth[]) {
 
 /** A green badge on one or two calls would claim more than the data supports. */
 export function statusLabel(provider: ProviderHealth): string | undefined {
-  if (provider.status === "unknown") return "No calls since start";
+  if (provider.status === "unknown") return "No calls yet";
   if (provider.status === "healthy" && provider.recentCalls < LOW_DATA) {
     return `Healthy · ${provider.recentCalls} ${provider.recentCalls === 1 ? "call" : "calls"}`;
   }
@@ -173,7 +173,7 @@ export function balanceText(
   store: Status["store"],
 ): { text: string; known: boolean } {
   const unit = balance?.unit;
-  const show = (value: number) => (unit === "usd" ? usd(value) : `${compact(value)} credits`);
+  const show = (value: number) => (unit === "usd" ? usd(value) : counted(value, "credit"));
   if (balance?.latest.remaining != null) {
     return { text: `${show(balance.latest.remaining)} left`, known: true };
   }

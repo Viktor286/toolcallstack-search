@@ -14,6 +14,11 @@ export function usd(value: number | null | undefined): string {
 }
 
 /** 1,284 / 12.9K / 4.2M */
+/** A count with its unit, singular for exactly one: "1 call", "3 calls", "1.5 credits". */
+export function counted(value: number, unit: string): string {
+  return `${compact(value)} ${value === 1 ? unit : `${unit}s`}`;
+}
+
 export function compact(value: number | null | undefined): string {
   if (value === null || value === undefined) return "–";
   if (Math.abs(value) < 10_000) return value.toLocaleString("en-US", { maximumFractionDigits: 2 });

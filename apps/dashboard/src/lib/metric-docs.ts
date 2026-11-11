@@ -17,7 +17,7 @@ export interface MetricDoc {
   source: string;
 }
 
-const healthBasis = `Taken from the provider's last ${HEALTH_WINDOW} calls since the gateway started (with \`SHARED_STATE\`, reloaded from the shared call log every \`SHARED_STATE_SYNC_SECONDS\`). Calls that say nothing about the provider are not counted: refused before anything was sent (\`throttled\`, \`budget_exceeded\`, \`not_configured\`), rejected for the caller's own request (\`upstream_invalid_request\`), or answered from the cache.`;
+const healthBasis = `Taken from the provider's last ${HEALTH_WINDOW} calls. With a database these are reloaded from the call log when the gateway starts (with \`SHARED_STATE\`, every \`SHARED_STATE_SYNC_SECONDS\`); without one they are the calls since start. Calls that say nothing about the provider are not counted: refused before anything was sent (\`throttled\`, \`budget_exceeded\`, \`not_configured\`), rejected for the caller's own request (\`upstream_invalid_request\`), or answered from the cache.`;
 
 const day24 =
   "The last 24 hourly buckets in UTC, ending with the current, unfinished hour: between 23 and 24 hours of history.";
@@ -36,7 +36,7 @@ export const METRIC_DOCS = {
       healthBasis,
       `Down: the last ${DOWN_AFTER} calls in a row failed.`,
       `Degraded: the latest call failed, or fewer than ${HEALTHY_SHARE * 100}% of the window succeeded.`,
-      "Healthy otherwise; no calls yet: nothing recorded since start.",
+      "Healthy otherwise; no calls yet: nothing recorded to judge.",
       `With fewer than ${LOW_DATA} calls the label shows the count, since a few calls prove little.`,
     ],
     source: "GET /v1/status → providers[].status · gateway health.ts snapshot()",
@@ -104,7 +104,7 @@ export const METRIC_DOCS = {
     meaning: "When this provider last answered with results.",
     logic: [
       "The receive time (`timing.receivedAt`) of the most recent successful call the gateway tracked.",
-      `Held in memory since start, or with \`SHARED_STATE\` found in the last ${HEALTH_WINDOW} logged calls, so "never" after a restart does not mean the provider has never worked.`,
+      `Restored from the last ${HEALTH_WINDOW} logged calls when the gateway starts with a database, so "never" means none of those succeeded; without a database it counts from process start.`,
     ],
     source: "GET /v1/status → providers[].lastOkAt",
   },
@@ -145,7 +145,7 @@ export const METRIC_DOCS = {
     title: "Providers",
     meaning: "How many configured providers are healthy, out of those with something to judge.",
     logic: [
-      "Counts only providers with an API key set. Providers without calls since start are left out of the total and listed in the note.",
+      "Counts only providers with an API key set. Providers without calls yet are left out of the total and listed in the note.",
       "Over budget: the provider's cap is reached, so calls to it are refused.",
       healthBasis,
     ],

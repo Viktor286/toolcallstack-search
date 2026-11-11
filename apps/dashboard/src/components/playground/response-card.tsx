@@ -118,21 +118,50 @@ function StatsHeader({ response, name, summary }: StatsProps) {
   );
 }
 
-/** Where the time went; shown with the figures above whichever view is open. */
-function Timing({ response }: { response: SearchResponse }) {
-  return response.timing.phases ? (
-    <PhaseBar queuedMs={response.timing.queuedMs} phases={response.timing.phases} />
-  ) : null;
+const hasDetails = (response: SearchResponse) =>
+  Boolean(response.error || response.warnings.length > 0 || response.timing.phases);
+
+/**
+ * What went wrong or was adjusted, and where the time went: shown with the figures above
+ * whichever view is open, so none of it hides behind a tab.
+ */
+function Details({ response }: { response: SearchResponse }) {
+  return (
+    <>
+      {response.error && (
+        <p className="rounded-md border px-3 py-2 text-sm break-words text-muted-foreground">
+          {response.error.message}
+        </p>
+      )}
+      {response.warnings.length > 0 && (
+        <ul className="space-y-1 text-sm text-muted-foreground">
+          {response.warnings.map((warning) => (
+            <li key={warning} className="flex gap-2">
+              <TriangleAlert
+                className="mt-0.5 size-4 shrink-0"
+                style={{ color: "var(--status-warning)" }}
+                aria-hidden
+              />
+              {warning}
+            </li>
+          ))}
+        </ul>
+      )}
+      {response.timing.phases && (
+        <PhaseBar queuedMs={response.timing.queuedMs} phases={response.timing.phases} />
+      )}
+    </>
+  );
 }
 
-/** One answer's figures and timing alone, for views that show the body elsewhere. */
+/** One answer's figures and details alone, for views that show the body elsewhere. */
 export function ResponseStats(props: StatsProps) {
   return (
     <Card className="min-w-0">
       <StatsHeader {...props} />
-      {props.response.timing.phases && (
-        <CardContent>
-          <Timing response={props.response} />
+      {hasDetails(props.response) && (
+        <CardContent className="space-y-4">
+          <Details response={props.response} />
         </CardContent>
       )}
     </Card>
@@ -152,34 +181,21 @@ export function ResponseCard({ response, name, summary, alsoIn }: Props) {
     <Card className="min-w-0">
       <StatsHeader response={response} name={name} summary={summary} />
       <CardContent className="space-y-4">
-        <Timing response={response} />
+        <Details response={response} />
         <Tabs defaultValue="results">
           <TabsList>
             <TabsTrigger value="results">Results</TabsTrigger>
             <TabsTrigger value="json">JSON</TabsTrigger>
             {raw !== undefined && <TabsTrigger value="raw">Raw upstream</TabsTrigger>}
           </TabsList>
-          <TabsContent value="results" className="space-y-4 pt-2">
-            {response.error && (
-              <p className="rounded-md border px-3 py-2 text-sm break-words text-muted-foreground">
-                {response.error.message}
+          <TabsContent value="results" className="pt-2">
+            {response.ok ? (
+              <ResultList results={response.results} alsoIn={alsoIn} />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No results: the call failed, as above.
               </p>
             )}
-            {response.warnings.length > 0 && (
-              <ul className="space-y-1 text-sm text-muted-foreground">
-                {response.warnings.map((warning) => (
-                  <li key={warning} className="flex gap-2">
-                    <TriangleAlert
-                      className="mt-0.5 size-4 shrink-0"
-                      style={{ color: "var(--status-warning)" }}
-                      aria-hidden
-                    />
-                    {warning}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {response.ok && <ResultList results={response.results} alsoIn={alsoIn} />}
           </TabsContent>
           <TabsContent value="json" className="pt-2">
             <JsonPane value={unified} name={`${file}.json`} />

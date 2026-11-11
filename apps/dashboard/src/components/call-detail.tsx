@@ -122,8 +122,8 @@ export function CallDetail({ id, initial }: { id: string; initial?: SearchRespon
         <Fact label="Results" icon={ListOrdered} help="results">
           {call.results.length}
         </Fact>
-        <Fact label="Cost" icon={CircleDollarSign} help="cost">
-          {cost === null ? "unknown" : `${usd(cost)} (${call.usage.costSource})`}
+        <Fact label={`Cost (${call.usage.costSource})`} icon={CircleDollarSign} help="cost">
+          {cost === null ? "unknown" : usd(cost)}
         </Fact>
         <Fact label="Credits" icon={Coins} help="credits">
           {call.usage.credits ?? "–"}

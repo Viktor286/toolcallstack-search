@@ -9,13 +9,13 @@ It is built for consumers that care about measurement as much as results. Every 
 its time went (queueing, DNS, connect, TLS, first byte, download), every retry it took, and what it
 cost. A dashboard shows all of it.
 
-![toolcallstack-search-overview.png](apps/dashboard/img/toolcallstack-search-overview-02.png)
+![Overview: gateway status, 24-hour totals and a card per provider](apps/dashboard/img/toolcallstack-search-overview-02.png)
 
-![toolcallstack-search-playground-01.png](apps/dashboard/img/toolcallstack-search-playground-03.png)
+![Playground: a request, its timing breakdown and the response JSON](apps/dashboard/img/toolcallstack-search-playground-03.png)
 
-![toolcallstack-search-calls-02.png](apps/dashboard/img/toolcallstack-search-calls-03.png)
+![Calls: the call log with one call opened](apps/dashboard/img/toolcallstack-search-calls-03.png)
 
-![toolcallstack-search-usage-01.png](apps/dashboard/img/toolcallstack-search-usage-01.png)
+![Usage: calls per hour, latency, cost and a cost check per API key](apps/dashboard/img/toolcallstack-search-usage-01.png)
 
 ## Quick start
 
@@ -255,8 +255,9 @@ drained by accident:
   floor cannot apply. Between polls the balance can drop below the floor.
 - A capped provider is not called: the call fails as `budget_exceeded` with a message saying which
   cap was hit and when it resets. Fallbacks move on to the next provider.
-- Spend is restored from the call log at start, so a restart does not reset a budget. Without a
-  database it counts from process start.
+- Spend is restored from the call log at start, so a restart does not reset a budget. Provider
+  health is restored the same way, from each provider's last 20 calls. Without a database both
+  count from process start.
 - Dollar and credit caps are only known once a call returns, so they can be overshot by the calls
   in flight at that moment. Call caps cannot.
 

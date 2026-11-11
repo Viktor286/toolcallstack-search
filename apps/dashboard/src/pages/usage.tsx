@@ -28,7 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api, query, type StatsResponse, type UsageResponse } from "@/lib/api";
-import { bucketLabel, compact, ms, percent, usd } from "@/lib/format";
+import { bucketLabel, compact, counted, ms, percent, usd } from "@/lib/format";
 import { byProviderOrder, providerColor } from "@/lib/providers";
 
 const RANGES = [
@@ -153,7 +153,7 @@ export function UsagePage() {
               label="Failed"
               help="failedShare"
               value={percent(failures, calls)}
-              note={`${compact(failures)} of ${compact(calls)} calls`}
+              note={`${compact(failures)} of ${counted(calls, "call")}`}
             />
             <Tile
               icon={CircleDollarSign}
@@ -248,7 +248,7 @@ export function UsagePage() {
                           label: row.provider,
                           value: row.cost,
                           display: row.cost === null ? "no price set" : usd(row.cost),
-                          note: `${compact(row.calls)} calls`,
+                          note: counted(row.calls, "call"),
                         }))}
                     />
                   </CardContent>
@@ -307,7 +307,7 @@ export function UsagePage() {
                             ? "–"
                             : unit === "usd"
                               ? usd(value)
-                              : `${compact(value)} credits`;
+                              : counted(value, "credit");
                         return (
                           <TableRow key={`${row.provider}-${row.keyFingerprint}`}>
                             <TableCell>
@@ -326,7 +326,7 @@ export function UsagePage() {
                               {row.reportedCostUsd !== null
                                 ? usd(row.reportedCostUsd)
                                 : row.credits !== null
-                                  ? `${compact(row.credits)} credits`
+                                  ? counted(row.credits, "credit")
                                   : "–"}
                             </TableCell>
                             <TableCell className="text-right tabular-nums">

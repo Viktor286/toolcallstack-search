@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { ago, callCost, compact, duration, ms, percent, usd } from "./format.ts";
+import { ago, callCost, compact, counted, duration, ms, percent, usd } from "./format.ts";
 import { byProviderOrder, providerColor } from "./providers.ts";
 
 describe("format", () => {
+  it("names a unit in the singular only for exactly one", () => {
+    expect(counted(1, "call")).toBe("1 call");
+    expect(counted(0, "call")).toBe("0 calls");
+    expect(counted(1.5, "credit")).toBe("1.5 credits");
+    expect(counted(12_000, "credit")).toBe("12K credits");
+  });
+
   it("formats durations", () => {
     expect([ms(null), ms(0.4), ms(842.4), ms(1240), ms(43_900)]).toEqual([
       "–",
