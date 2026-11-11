@@ -125,7 +125,7 @@ export function providerMarkdown(provider: ProviderDoc): string {
   return `# ${provider.name} (\`${provider.id}\`)
 
 - Status: ${provider.configured ? "configured and usable" : `not configured (set \`${provider.envVar}\` on the gateway)`}
-- Upstream documentation: ${provider.docs}
+- Upstream documentation: ${provider.docs}${provider.console ? `\n- Console (account, keys, billing): ${provider.console}` : ""}
 - Most results per call: ${provider.maxResults}
 - Supported unified parameters: ${
     FEATURES.filter(([feature]) => provider.features.includes(feature))

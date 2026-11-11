@@ -70,22 +70,22 @@ beside real ones and `false` removes them.
 
 ## API
 
-| Endpoint                | Purpose                                                             |
-| ----------------------- | ------------------------------------------------------------------- |
-| `POST /v1/search`       | Search with one provider, optionally falling back to others.        |
-| `POST /v1/search/batch` | Send the same query to several providers at the same instant.       |
-| `GET /v1/providers`     | Providers: configured or not, supported parameters, limits, prices. |
-| `GET /v1/providers/:id` | One provider in detail, including notes on useful `options`.        |
-| `GET /v1/status`        | Health of the gateway and of each provider.                         |
-| `POST /mcp`             | MCP server for AI agents (Streamable HTTP).                         |
-| `GET /v1/calls`         | Logged calls, newest first, with filters and cursor paging.         |
-| `GET /v1/calls/:id`     | One logged call, with the raw upstream body when it was stored.     |
-| `GET /v1/usage`         | Calls, cost and account balance change per provider and API key.    |
-| `GET /v1/stats`         | Calls, failures, latency and cost per provider over time.           |
-| `GET /ui`               | The dashboard, when it has been built.                              |
-| `GET /docs`             | Swagger UI; the OpenAPI document is at `/docs/json`.                |
-| `GET /metrics`          | Prometheus metrics.                                                 |
-| `GET /health`, `/ready` | Liveness, and readiness including the database.                     |
+| Endpoint                | Purpose                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------- |
+| `POST /v1/search`       | Search with one provider, optionally falling back to others.                                |
+| `POST /v1/search/batch` | Send the same query to several providers at the same instant.                               |
+| `GET /v1/providers`     | Providers: configured or not, supported parameters, limits, prices, docs and console links. |
+| `GET /v1/providers/:id` | One provider in detail, including notes on useful `options`.                                |
+| `GET /v1/status`        | Health of the gateway and of each provider.                                                 |
+| `POST /mcp`             | MCP server for AI agents (Streamable HTTP).                                                 |
+| `GET /v1/calls`         | Logged calls, newest first, with filters and cursor paging.                                 |
+| `GET /v1/calls/:id`     | One logged call, with the raw upstream body when it was stored.                             |
+| `GET /v1/usage`         | Calls, cost and account balance change per provider and API key.                            |
+| `GET /v1/stats`         | Calls, failures, latency and cost per provider over time.                                   |
+| `GET /ui`               | The dashboard, when it has been built.                                                      |
+| `GET /docs`             | Swagger UI; the OpenAPI document is at `/docs/json`.                                        |
+| `GET /metrics`          | Prometheus metrics.                                                                         |
+| `GET /health`, `/ready` | Liveness, and readiness including the database.                                             |
 
 Documentation endpoints for AI agents are listed [below](#for-ai-agents).
 
@@ -350,7 +350,8 @@ update their counters with a delay, so compare over windows of minutes or more.
 | Playground | Run a query against one provider or several at once and compare; the last 10 runs are kept in this browser.                                                           |
 
 Every figure explains itself on hover: what it means, how it is computed and which field it comes
-from. On the Overview, a provider's hourly bars open the calls of that hour.
+from. On the Overview, a provider's hourly bars open the calls of that hour, and the icon beside
+its name opens the provider's own console, for its account, keys and billing.
 
 `pnpm dev` serves it on port 4311 against the local gateway. `pnpm build` writes
 `apps/dashboard/dist`, which the gateway then serves at `/ui`; the Docker image includes it. When
