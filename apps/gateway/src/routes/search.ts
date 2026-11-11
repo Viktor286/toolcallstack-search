@@ -24,6 +24,7 @@ export const searchRoutes: FastifyPluginAsyncZod = async (app) => {
         response: {
           200: searchResponseSchema,
           404: searchResponseSchema,
+          422: searchResponseSchema,
           429: searchResponseSchema,
           502: searchResponseSchema,
           503: searchResponseSchema,

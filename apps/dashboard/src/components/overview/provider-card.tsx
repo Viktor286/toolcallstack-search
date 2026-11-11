@@ -17,6 +17,7 @@ import { ProviderName } from "@/components/provider-name";
 import { StatusLabel, type StatusKind } from "@/components/status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ProviderInfo, Status } from "@/lib/api";
+import { hourLink } from "@/lib/call-filters";
 import type { MetricId } from "@/lib/metric-docs";
 import { ago, compact, ms, usd } from "@/lib/format";
 import {
@@ -221,6 +222,7 @@ export function ProviderCard({ provider, info, balance, activity, store, now }: 
               buckets={activity.hourly}
               color={providerColor(provider.id)}
               label={`${info?.name ?? provider.id} calls per hour, last 24 hours`}
+              hrefFor={(start) => hourLink(provider.id, start)}
             />
             <div className="mt-1 flex justify-between text-[11px] text-[var(--chart-muted)]">
               <span>24 h ago</span>

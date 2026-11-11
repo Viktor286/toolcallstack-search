@@ -98,4 +98,15 @@ describe("tracing", () => {
     await app.inject("/health");
     expect(spans()).toHaveLength(0);
   });
+
+  it("links latency histograms to the trace through exemplars", async () => {
+    await search({ options: { latencyMs: 1 } });
+    const metrics = await app.inject("/metrics");
+    expect(metrics.headers["content-type"]).toContain("application/openmetrics-text");
+    expect(metrics.body).toMatch(
+      new RegExp(
+        `toolcallstack_search_call_duration_seconds_bucket\\{[^}]*\\} \\d+ # \\{trace_id="${TRACE_ID}"\\}`,
+      ),
+    );
+  });
 });

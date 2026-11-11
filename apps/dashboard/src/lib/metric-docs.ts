@@ -17,16 +17,16 @@ export interface MetricDoc {
   source: string;
 }
 
-const healthBasis = `Taken from the provider's last ${HEALTH_WINDOW} calls since the gateway started (with \`SHARED_STATE\`, reloaded from the shared call log every \`SHARED_STATE_SYNC_SECONDS\`). Calls refused before anything was sent (\`throttled\`, \`budget_exceeded\`, \`not_configured\`) are not counted.`;
+const healthBasis = `Taken from the provider's last ${HEALTH_WINDOW} calls since the gateway started (with \`SHARED_STATE\`, reloaded from the shared call log every \`SHARED_STATE_SYNC_SECONDS\`). Calls that say nothing about the provider are not counted: refused before anything was sent (\`throttled\`, \`budget_exceeded\`, \`not_configured\`), rejected for the caller's own request (\`upstream_invalid_request\`), or answered from the cache.`;
 
 const day24 =
   "The last 24 hourly buckets in UTC, ending with the current, unfinished hour: between 23 and 24 hours of history.";
 
 const callRows =
-  "One gateway call is one row in the call log: its retries are inside it, while each provider tried through `fallbacks` and each provider in a batch is a call of its own.";
+  "One gateway call is one row in the call log: its retries are inside it, while each provider tried through `fallbacks` and each provider in a batch is a call of its own. Calls answered from the cache count too.";
 
 const costRule =
-  "Per call, the dollars the provider reported (`usage.costUsd`), otherwise the gateway's list-price estimate (`usage.estimatedCostUsd`). Failed calls cost nothing here.";
+  "Per call, the dollars the provider reported (`usage.costUsd`), otherwise the gateway's list-price estimate (`usage.estimatedCostUsd`). Failed calls and cache hits cost nothing here.";
 
 export const METRIC_DOCS = {
   health: {
@@ -58,7 +58,7 @@ export const METRIC_DOCS = {
     meaning:
       "How slow the slowest 5% of successful calls got, in the provider's worst hour of the last day. A tail-latency alarm, not an average.",
     logic: [
-      "Per hour, Postgres computes `percentile_cont(0.95)` over `latency_ms` of the hour's successful calls (interpolated, final attempt only).",
+      "Per hour, Postgres computes `percentile_cont(0.95)` over `latency_ms` of the hour's successful calls (interpolated, final attempt only, cache hits left out).",
       "The card shows the highest of those hourly values, not a p95 over all 24 hours at once.",
       day24,
       "Needs the call log (`DATABASE_URL`).",
@@ -162,7 +162,7 @@ export const METRIC_DOCS = {
     meaning: "The share of calls in the period that ended without results.",
     logic: [
       "failed calls ÷ all calls, as a percentage (one decimal below 1%).",
-      "Failed means `ok` is false after all retries, including calls refused by a budget or the rate-limit queue.",
+      "Failed means `ok` is false after all retries, including calls refused by a budget or the rate-limit queue. The Calls page filters by error type.",
       callRows,
     ],
     source: "GET /v1/stats → points[].failures ÷ points[].calls",
@@ -187,7 +187,7 @@ export const METRIC_DOCS = {
     title: "Typical latency",
     meaning: "A typical successful call's duration per provider, with its worst tail.",
     logic: [
-      "Postgres takes the median (`percentile_cont(0.5)`) of `latency_ms` of successful calls per bucket.",
+      "Postgres takes the median (`percentile_cont(0.5)`) of `latency_ms` of successful calls per bucket, leaving out cache hits, which took no upstream time.",
       "The bar is the mean of those bucket medians, weighted by each bucket's successful calls: close to the overall median, but an approximation.",
       "p95 is the highest bucket p95 in the period, as on the Overview.",
       "Latency is the final attempt alone, without queueing or retries.",
@@ -267,7 +267,7 @@ export const METRIC_DOCS = {
     meaning: "How long the caller waited for this call, end to end.",
     logic: [
       "Measured on the monotonic clock from the gateway starting this provider's call to its response being ready (`timing.totalMs`).",
-      "Includes queueing under the rate limit, every attempt and the backoff waits between them.",
+      "Includes queueing under the rate limit, every attempt and the backoff waits between them. A cache hit took only the gateway's own time.",
       "With fallbacks, each provider's call has its own total.",
     ],
     source: "timing.totalMs",
@@ -327,6 +327,7 @@ export const METRIC_DOCS = {
     meaning: "What this call cost.",
     logic: [
       "`reported`: the provider said so (`usage.costUsd`).",
+      "`cache`: answered from the gateway's cache, so nothing was billed.",
       "`estimated`: the gateway's list price (`usage.estimatedCostUsd`), from credits × price per credit or price per request plus extra results.",
       "`unknown`: the provider reports nothing and no price is set. Failed calls cost nothing.",
     ],
@@ -339,6 +340,17 @@ export const METRIC_DOCS = {
       "Only providers that report it per call (Tavily, Firecrawl; Parallel reports request counts).",
     ],
     source: "usage.credits",
+  },
+  cache: {
+    title: "Cache",
+    meaning: "Whether this call reused an identical earlier answer instead of asking the provider.",
+    logic: [
+      "Only when the request allowed it with `cacheTtlSeconds` (or the gateway's `CACHE_TTL_SECONDS` default); otherwise the field is absent.",
+      "A hit reuses a successful answer no older than `cacheTtlSeconds` from the same provider with the same query, filters and options. An identical call still in flight is joined instead of sent again.",
+      "A hit costs nothing, is left out of latency, health and budgets, and points to the call it reused (`cache.sourceCallId`).",
+      "The cache is in memory on each gateway instance.",
+    ],
+    source: "cache.hit, cache.ageMs · gateway cache.ts ResponseCache",
   },
   dated: {
     title: "Dated",
@@ -355,7 +367,7 @@ export const METRIC_DOCS = {
     logic: [
       "URLs are compared after normalising: lower-case host without `www.`, `m.` or `amp.`, no trailing slash, tracking parameters (`utm_*`, `gclid`, …) removed, the rest sorted.",
     ],
-    source: "dashboard playground.ts normalizeUrl(), sharedResults()",
+    source: "results[].canonicalUrl · gateway canonical-url.ts canonicalUrl()",
   },
   newest: {
     title: "Newest",

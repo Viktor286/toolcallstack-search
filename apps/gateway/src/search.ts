@@ -2,17 +2,20 @@ import { randomUUID } from "node:crypto";
 import { SpanKind, SpanStatusCode, context, trace, type Context } from "@opentelemetry/api";
 import type { FastifyBaseLogger } from "fastify";
 import type { BudgetTracker } from "./budget.ts";
+import { cacheKey, type CacheEntry, type ResponseCache } from "./cache.ts";
+import { canonicalUrl } from "./canonical-url.ts";
 import { withCost, type Pricing } from "./cost.ts";
 import type { HealthTracker } from "./health.ts";
 import { QueueTimeoutError, type Limiter } from "./limiter.ts";
 import type { Metrics } from "./metrics.ts";
 import { providersById } from "./providers/index.ts";
 import type { Provider, UpstreamRequest } from "./providers/types.ts";
-import type { ErrorType, SearchError, SearchParams, SearchResponse } from "./schema.ts";
+import type { ErrorType } from "./error-types.ts";
+import type { SearchError, SearchParams, SearchResponse } from "./schema.ts";
 import type { Store } from "./store.ts";
 import { tracer } from "./tracing.ts";
 import type { Phases, Transport } from "./transport.ts";
-import { deepMerge, keyFingerprint, redact } from "./util.ts";
+import { deepMerge, isRecord, keyFingerprint, redact } from "./util.ts";
 
 export interface RetryPolicy {
   /** Retries after the first attempt, unless the request sets `maxRetries`. */
@@ -36,6 +39,9 @@ export interface SearchDeps {
   pricing: Record<string, Pricing | undefined>;
   metrics: Metrics;
   store: Store | null;
+  cache: ResponseCache;
+  /** Applies when a request sets no `cacheTtlSeconds`; 0 leaves caching off. */
+  defaultCacheTtlSeconds: number;
   log: FastifyBaseLogger;
 }
 
@@ -93,10 +99,36 @@ function upstreamMessage(body: unknown, status: number): string {
   return `upstream responded ${status}: ${text.slice(0, 500)}`;
 }
 
+/**
+ * What an error status from the provider means. Auth and quota problems are the
+ * gateway's account, a rejected request is usually the caller's `options`; none
+ * of them is fixed by sending the same request again.
+ */
+function upstreamErrorType(status: number): ErrorType {
+  if (status === 429) return "rate_limited";
+  if (status === 401 || status === 403) return "auth_error";
+  // Tavily answers 432 and 433 when a plan or pay-as-you-go limit is reached.
+  if (status === 402 || status === 432 || status === 433) return "quota_exceeded";
+  if (status === 400 || status === 404 || status === 422) return "upstream_invalid_request";
+  return "upstream_error";
+}
+
 /** Failures worth repeating: the same request may succeed a moment later. */
 function isRetryable(type: ErrorType | null, upstreamStatus: number | null): boolean {
   if (type === "timeout" || type === "network" || type === "rate_limited") return true;
   return type === "upstream_error" && upstreamStatus !== null && upstreamStatus >= 500;
+}
+
+/**
+ * Whether a JSON body holds a web address anywhere. A successful answer that
+ * does while no result could be read from it most likely means the provider
+ * changed its response format.
+ */
+function holdsUrl(value: unknown, depth = 0): boolean {
+  if (typeof value === "string") return /^https?:\/\/\S/.test(value);
+  if (depth > 8) return false;
+  if (Array.isArray(value)) return value.some((item) => holdsUrl(item, depth + 1));
+  return isRecord(value) && Object.values(value).some((item) => holdsUrl(item, depth + 1));
 }
 
 /** `Retry-After` as milliseconds; it is either a number of seconds or an HTTP date. */
@@ -199,10 +231,8 @@ async function attemptOnce(
       attempt.raw = upstream.text;
     }
 
-    if (upstream.status === 429) {
-      fail("rate_limited", upstreamMessage(attempt.raw, upstream.status));
-    } else if (upstream.status < 200 || upstream.status >= 300) {
-      fail("upstream_error", upstreamMessage(attempt.raw, upstream.status));
+    if (upstream.status < 200 || upstream.status >= 300) {
+      fail(upstreamErrorType(upstream.status), upstreamMessage(attempt.raw, upstream.status));
     } else if (typeof attempt.raw === "string") {
       fail("bad_response", `upstream returned non-JSON body: ${upstream.text.slice(0, 200)}`);
     } else {
@@ -266,6 +296,7 @@ export function executeSearch(
         "search.retries": response.retries.count,
         "search.queued_ms": Math.round(response.timing.queuedMs),
         "search.cost_source": response.usage.costSource,
+        "search.cache_hit": response.cache?.hit ?? false,
         ...(cost === undefined ? {} : { "search.cost_usd": cost }),
         ...(searchContext.client ? { "search.client": searchContext.client } : {}),
         ...(searchContext.batchId ? { "search.batch_id": searchContext.batchId } : {}),
@@ -279,6 +310,153 @@ export function executeSearch(
       span.end();
     }
   });
+}
+
+/** Fill a response from a cached answer: nothing was sent upstream and nothing billed. */
+function reuse(response: SearchResponse, entry: CacheEntry): unknown {
+  const now = new Date().toISOString();
+  response.ok = true;
+  response.results = entry.results;
+  response.warnings = [...entry.warnings];
+  response.upstream = { ...entry.upstream };
+  response.usage = { costUsd: 0, costSource: "cache" };
+  response.cache = {
+    hit: true,
+    ageMs: Math.max(0, Date.now() - entry.storedAt),
+    sourceCallId: entry.callId,
+  };
+  response.timing.sentAt = now;
+  response.timing.receivedAt = now;
+  return entry.raw;
+}
+
+/**
+ * Send a call upstream: reserve budget, queue under the rate limit, retry
+ * transient failures, and fill `response` as attempts come back. Returns the
+ * raw body of the final attempt.
+ */
+async function callUpstream(
+  deps: SearchDeps,
+  provider: Provider,
+  apiKey: string,
+  effective: SearchParams,
+  response: SearchResponse,
+  active: Context,
+): Promise<unknown> {
+  const id = response.id;
+  let raw: unknown;
+  const maxRetries = effective.maxRetries ?? deps.retry.maxRetries;
+  const timeoutMs = effective.timeoutMs ?? deps.defaultTimeoutMs;
+  const maxQueueMs = effective.maxQueueMs ?? deps.defaultMaxQueueMs;
+
+  for (let index = 0; ; index++) {
+    const overBudget = deps.budget.reserve(provider.id);
+    if (overBudget !== null) {
+      // Refused before queueing: nothing is sent and no slot is taken.
+      response.error = { type: "budget_exceeded", message: overBudget, upstreamStatus: null };
+      break;
+    }
+    let attempt: Attempt;
+    try {
+      attempt = await deps.limiter.run(provider.id, maxQueueMs, (queuedMs) =>
+        attemptOnce(deps, provider, apiKey, effective, timeoutMs, queuedMs, {
+          parent: active,
+          index,
+        }),
+      );
+    } catch (error) {
+      deps.budget.settle(provider.id, null);
+      if (!(error instanceof QueueTimeoutError)) throw error;
+      // Nothing was sent, so there is no attempt to record.
+      response.timing.queuedMs += maxQueueMs;
+      response.error = { type: "throttled", message: error.message, upstreamStatus: null };
+      break;
+    }
+
+    raw = attempt.raw;
+    response.error = attempt.error;
+    response.upstream.status = attempt.status;
+    response.timing.sentAt = attempt.sentAt.toISOString();
+    response.timing.receivedAt = attempt.receivedAt.toISOString();
+    response.timing.latencyMs = attempt.latencyMs;
+    response.timing.phases = attempt.phases;
+    response.timing.queuedMs += attempt.queuedMs;
+    deps.metrics.queueWait.observe({ provider: provider.id }, attempt.queuedMs / 1000);
+    if (attempt.phases) {
+      deps.metrics.upstreamTtfb.observe({ provider: provider.id }, attempt.phases.ttfbMs / 1000);
+      const { dnsMs, connectMs, tlsMs, ttfbMs, downloadMs } = attempt.phases;
+      for (const [phase, ms] of [
+        ["dns", dnsMs],
+        ["connect", connectMs],
+        ["tls", tlsMs],
+        ["ttfb", ttfbMs],
+        ["download", downloadMs],
+      ] as const) {
+        if (ms !== null)
+          deps.metrics.upstreamPhase.observe({ provider: provider.id, phase }, ms / 1000);
+      }
+    }
+
+    const errorType = attempt.error?.type ?? null;
+    const backoffMs =
+      index < maxRetries && isRetryable(errorType, attempt.status)
+        ? backoffDelay(deps.retry, index, attempt.retryAfterMs)
+        : null;
+    response.retries.attempts.push({
+      sentAt: attempt.sentAt.toISOString(),
+      queuedMs: attempt.queuedMs,
+      latencyMs: attempt.latencyMs,
+      phases: attempt.phases,
+      upstreamStatus: attempt.status,
+      error: errorType,
+      backoffMs,
+    });
+
+    if (attempt.parsed) {
+      const readable = attempt.parsed.results.filter((result) => result.url !== "");
+      response.results = readable.map((result, position) => ({
+        position: position + 1,
+        ...result,
+        canonicalUrl: canonicalUrl(result.url),
+      }));
+      // A changed response format does not fail a call: the parser just finds nothing.
+      const dropped = attempt.parsed.results.length - readable.length;
+      if (dropped > 0) {
+        response.warnings.push(
+          `${dropped} ${dropped === 1 ? "result" : "results"} had no URL and ${dropped === 1 ? "was" : "were"} dropped`,
+        );
+        deps.metrics.parseAnomalies.inc({ provider: provider.id, kind: "no_url" });
+      }
+      if (readable.length === 0 && holdsUrl(attempt.raw)) {
+        response.warnings.push(
+          "the provider answered with content but no result could be read from it; its response format may have changed",
+        );
+        deps.metrics.parseAnomalies.inc({ provider: provider.id, kind: "unreadable" });
+        deps.log.warn(
+          { callId: id, provider: provider.id },
+          "successful answer had no readable results: check the provider's response format",
+        );
+      }
+      response.usage = withCost(
+        attempt.parsed.usage ?? {},
+        deps.pricing[provider.id],
+        effective.maxResults,
+      );
+      response.upstream.requestId = attempt.parsed.upstreamRequestId ?? null;
+      response.ok = true;
+    }
+    deps.budget.settle(provider.id, response.ok ? response.usage : null);
+    if (backoffMs === null) break;
+    trace.getSpan(active)?.addEvent("retry", {
+      "search.backoff_ms": backoffMs,
+      "error.type": errorType ?? "unknown",
+    });
+    response.retries.count += 1;
+    response.retries.backoffMs += backoffMs;
+    deps.metrics.upstreamRetries.inc({ provider: provider.id, reason: errorType ?? "unknown" });
+    await deps.retry.sleep(backoffMs);
+  }
+  return raw;
 }
 
 async function runSearch(
@@ -319,6 +497,7 @@ async function runSearch(
     upstream: { status: null, requestId: null },
     warnings: [],
     error: null,
+    cache: null,
     fallback: { tried: [] },
   };
   let raw: unknown;
@@ -343,99 +522,68 @@ async function runSearch(
       response.warnings.push(`maxResults capped at ${provider.maxResults}`);
       effective = { ...params, maxResults: provider.maxResults };
     }
-    const maxRetries = params.maxRetries ?? deps.retry.maxRetries;
-    const timeoutMs = params.timeoutMs ?? deps.defaultTimeoutMs;
-    const maxQueueMs = params.maxQueueMs ?? deps.defaultMaxQueueMs;
-
-    for (let index = 0; ; index++) {
-      const overBudget = deps.budget.reserve(provider.id);
-      if (overBudget !== null) {
-        // Refused before queueing: nothing is sent and no slot is taken.
-        response.error = { type: "budget_exceeded", message: overBudget, upstreamStatus: null };
-        break;
+    const ttlMs = (params.cacheTtlSeconds ?? deps.defaultCacheTtlSeconds) * 1000;
+    const claim =
+      ttlMs > 0
+        ? await deps.cache.claim(cacheKey(provider.id, effective), {
+            maxAgeMs: ttlMs,
+            ttlMs,
+            needRaw: params.includeRaw,
+          })
+        : null;
+    if (claim && "reused" in claim) {
+      raw = reuse(response, claim.reused);
+      deps.metrics.cacheLookups.inc({
+        provider: provider.id,
+        result: claim.shared ? "shared" : "hit",
+      });
+    } else {
+      if (claim) {
+        response.cache = { hit: false, ageMs: null, sourceCallId: null };
+        deps.metrics.cacheLookups.inc({ provider: provider.id, result: "miss" });
       }
-      let attempt: Attempt;
       try {
-        attempt = await deps.limiter.run(provider.id, maxQueueMs, (queuedMs) =>
-          attemptOnce(deps, provider, apiKey, effective, timeoutMs, queuedMs, {
-            parent: active,
-            index,
-          }),
+        raw = await callUpstream(deps, provider, apiKey, effective, response, active);
+      } finally {
+        // Waiting identical calls get this answer too; a failure is never cached.
+        claim?.finish(
+          response.ok
+            ? {
+                callId: response.id,
+                results: response.results,
+                warnings: response.warnings,
+                upstream: response.upstream,
+                hasRaw: params.includeRaw,
+                ...(params.includeRaw ? { raw } : {}),
+              }
+            : null,
         );
-      } catch (error) {
-        deps.budget.settle(provider.id, null);
-        if (!(error instanceof QueueTimeoutError)) throw error;
-        // Nothing was sent, so there is no attempt to record.
-        response.timing.queuedMs += maxQueueMs;
-        response.error = { type: "throttled", message: error.message, upstreamStatus: null };
-        break;
       }
-
-      raw = attempt.raw;
-      response.error = attempt.error;
-      response.upstream.status = attempt.status;
-      response.timing.sentAt = attempt.sentAt.toISOString();
-      response.timing.receivedAt = attempt.receivedAt.toISOString();
-      response.timing.latencyMs = attempt.latencyMs;
-      response.timing.phases = attempt.phases;
-      response.timing.queuedMs += attempt.queuedMs;
-      deps.metrics.queueWait.observe({ provider: provider.id }, attempt.queuedMs / 1000);
-      if (attempt.phases) {
-        deps.metrics.upstreamTtfb.observe({ provider: provider.id }, attempt.phases.ttfbMs / 1000);
-      }
-
-      const errorType = attempt.error?.type ?? null;
-      const backoffMs =
-        index < maxRetries && isRetryable(errorType, attempt.status)
-          ? backoffDelay(deps.retry, index, attempt.retryAfterMs)
-          : null;
-      response.retries.attempts.push({
-        sentAt: attempt.sentAt.toISOString(),
-        queuedMs: attempt.queuedMs,
-        latencyMs: attempt.latencyMs,
-        phases: attempt.phases,
-        upstreamStatus: attempt.status,
-        error: errorType,
-        backoffMs,
-      });
-
-      if (attempt.parsed) {
-        response.results = attempt.parsed.results
-          .filter((result) => result.url !== "")
-          .map((result, position) => ({ position: position + 1, ...result }));
-        response.usage = withCost(
-          attempt.parsed.usage ?? {},
-          deps.pricing[provider.id],
-          effective.maxResults,
-        );
-        response.upstream.requestId = attempt.parsed.upstreamRequestId ?? null;
-        response.ok = true;
-      }
-      deps.budget.settle(provider.id, response.ok ? response.usage : null);
-      if (backoffMs === null) break;
-      trace.getSpan(active)?.addEvent("retry", {
-        "search.backoff_ms": backoffMs,
-        "error.type": errorType ?? "unknown",
-      });
-      response.retries.count += 1;
-      response.retries.backoffMs += backoffMs;
-      deps.metrics.upstreamRetries.inc({ provider: provider.id, reason: errorType ?? "unknown" });
-      await deps.retry.sleep(backoffMs);
     }
   }
   response.timing.totalMs = performance.now() - started;
 
-  deps.health.record(response);
+  // A cache hit sent nothing upstream, so it says nothing about the provider's health or speed.
+  const hit = response.cache?.hit === true;
+  if (!hit) deps.health.record(response);
   const outcome = response.error?.type ?? "ok";
-  deps.metrics.upstreamCalls.inc({ provider: response.provider, outcome });
-  if (response.retries.attempts.length > 0) {
-    deps.metrics.upstreamDuration.observe(
-      { provider: response.provider, outcome },
-      response.timing.latencyMs / 1000,
-    );
+  const traceId = trace.getSpanContext(active)?.traceId;
+  const labels = { provider: response.provider, outcome };
+  if (!hit) {
+    deps.metrics.upstreamCalls.inc(labels);
+    deps.metrics.observeCall(labels, response.timing.totalMs / 1000, traceId);
   }
-  if (response.ok) {
+  if (response.retries.attempts.length > 0) {
+    deps.metrics.observeUpstream(labels, response.timing.latencyMs / 1000, traceId);
+  }
+  if (response.ok && !hit) {
     deps.metrics.upstreamResults.observe({ provider: response.provider }, response.results.length);
+    const dated = response.results.filter((result) => result.publishedAt !== null).length;
+    deps.metrics.results.inc({ provider: response.provider, dated: "true" }, dated);
+    deps.metrics.results.inc(
+      { provider: response.provider, dated: "false" },
+      response.results.length - dated,
+    );
     const cost = response.usage.costUsd ?? response.usage.estimatedCostUsd;
     if (cost !== undefined) {
       deps.metrics.cost.inc(
@@ -447,13 +595,14 @@ async function runSearch(
   deps.log[response.ok ? "info" : "warn"](
     {
       callId: id,
-      traceId: trace.getSpanContext(active)?.traceId,
+      traceId,
       batchId: searchContext.batchId ?? null,
       client: searchContext.client ?? null,
       provider: response.provider,
       label,
       query: params.query,
       outcome,
+      cache: response.cache ? (hit ? "hit" : "miss") : undefined,
       upstreamStatus: response.upstream.status,
       latencyMs: Math.round(response.timing.latencyMs),
       totalMs: Math.round(response.timing.totalMs),
@@ -514,7 +663,7 @@ export async function searchWithFallbacks(
 }
 
 /** HTTP status for a single-provider search response. */
-export function statusFor(response: SearchResponse): 200 | 404 | 429 | 502 | 503 | 504 {
+export function statusFor(response: SearchResponse): 200 | 404 | 422 | 429 | 502 | 503 | 504 {
   switch (response.error?.type) {
     case undefined:
       return 200;
@@ -522,6 +671,8 @@ export function statusFor(response: SearchResponse): 200 | 404 | 429 | 502 | 503
       return 404;
     case "not_configured":
       return 503;
+    case "upstream_invalid_request":
+      return 422;
     case "rate_limited":
     case "throttled":
     case "budget_exceeded":

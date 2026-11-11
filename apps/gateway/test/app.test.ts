@@ -177,13 +177,19 @@ describe("POST /v1/search", () => {
       "freshness 'hour' is not supported; widened to 'day'",
       "country is not supported and was ignored",
       "maxResults capped at 20",
+      "1 result had no URL and was dropped",
     ]);
   });
 
   it.each([
     [429, "rate_limited", 429],
     [500, "upstream_error", 502],
-    [401, "upstream_error", 502],
+    [401, "auth_error", 502],
+    [403, "auth_error", 502],
+    [402, "quota_exceeded", 502],
+    [432, "quota_exceeded", 502],
+    [400, "upstream_invalid_request", 422],
+    [422, "upstream_invalid_request", 422],
   ])("maps upstream %i to %s", async (upstreamStatus, type, status) => {
     const { app } = await setup(async () => json({ detail: "nope" }, upstreamStatus));
     close = () => app.close();
@@ -358,7 +364,7 @@ describe("retries", () => {
       url.includes("tavily") ? json({ detail: "bad key" }, 401) : new Response("<html>"),
     );
     close = () => app.close();
-    expect((await search(app)).json().error.type).toBe("upstream_error");
+    expect((await search(app)).json().error.type).toBe("auth_error");
     expect((await search(app, { provider: "you" })).json().error.type).toBe("bad_response");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(sleeps).toEqual([]);
@@ -435,7 +441,7 @@ describe("fallbacks", () => {
         t.error.type,
       ]),
     ).toEqual([
-      ["tavily", "upstream_error"],
+      ["tavily", "auth_error"],
       ["exa", "not_configured"],
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -452,7 +458,7 @@ describe("fallbacks", () => {
       url: "/v1/search",
       payload: { provider: "tavily", fallbacks: ["you"], query: "hello" },
     });
-    expect(response.statusCode).toBe(502);
+    expect(response.statusCode).toBe(422);
     const body = response.json();
     expect(body).toMatchObject({ provider: "you", ok: false });
     expect(body.fallback.tried.map((t: { provider: string }) => t.provider)).toEqual(["tavily"]);
@@ -587,10 +593,21 @@ describe("inbound rate limit", () => {
 });
 
 describe("GET /v1/status", () => {
+  it("leaves health alone when the provider rejects the caller's request", async () => {
+    const { app } = await setup(async () => json({ detail: "unknown field" }, 400));
+    close = () => app.close();
+    expect((await search(app)).json().error.type).toBe("upstream_invalid_request");
+    const body = (await app.inject({ method: "GET", url: "/v1/status" })).json();
+    expect(body.providers.find((p: { id: string }) => p.id === "tavily")).toMatchObject({
+      status: "unknown",
+      recentCalls: 0,
+    });
+  });
+
   it("derives provider health from traffic", async () => {
     let fail = false;
     const { app } = await setup(async () =>
-      fail ? json({ detail: "bad" }, 400) : json(tavilyBody),
+      fail ? json({ detail: "bad" }, 500) : json(tavilyBody),
     );
     close = () => app.close();
     const once = () => search(app);
@@ -798,8 +815,8 @@ describe("budgets", () => {
     );
     close = () => app.close();
     // Failed calls are not billed, so they do not use the budget.
-    expect((await search(app)).json().error.type).toBe("upstream_error");
-    expect((await search(app)).json().error.type).toBe("upstream_error");
+    expect((await search(app)).json().error.type).toBe("upstream_invalid_request");
+    expect((await search(app)).json().error.type).toBe("upstream_invalid_request");
     fail = false;
     expect((await search(app)).json().ok).toBe(true);
     // 0.008 spent is under the 0.01 cap, so one more call is allowed and takes it over.
@@ -1049,5 +1066,132 @@ describe("minRemaining budgets", () => {
       expect(response.statusCode).toBe(429);
       expect(response.json().error.type).toBe("budget_exceeded");
     });
+  });
+});
+
+describe("answers the gateway cannot read", () => {
+  it("warns and counts it when a successful answer has content but no readable result", async () => {
+    // As if Tavily renamed `results` and `url`.
+    const { app } = await setup(async () => json({ items: [{ link: "https://a.com/1" }] }));
+    close = () => app.close();
+    const body = (await search(app)).json();
+    expect(body).toMatchObject({ ok: true, results: [] });
+    expect(body.warnings).toContain(
+      "the provider answered with content but no result could be read from it; its response format may have changed",
+    );
+    const metrics = (await app.inject({ method: "GET", url: "/metrics" })).body;
+    expect(metrics).toContain(
+      'toolcallstack_search_parse_anomalies_total{provider="tavily",kind="unreadable"} 1',
+    );
+  });
+
+  it("stays quiet about a genuinely empty answer", async () => {
+    const { app } = await setup(async () => json({ query: "hello", results: [] }));
+    close = () => app.close();
+    expect((await search(app)).json()).toMatchObject({ ok: true, results: [], warnings: [] });
+  });
+});
+
+describe("timing metrics", () => {
+  it("records whole calls, every phase and dated results", async () => {
+    const { app } = await setup(async () => json(tavilyBody));
+    close = () => app.close();
+    await search(app);
+    const metrics = (await app.inject({ method: "GET", url: "/metrics" })).body;
+    expect(metrics).toContain(
+      'toolcallstack_search_call_duration_seconds_count{provider="tavily",outcome="ok"} 1',
+    );
+    for (const phase of ["dns", "connect", "tls", "ttfb", "download"]) {
+      expect(metrics).toContain(
+        `toolcallstack_search_upstream_phase_seconds_count{provider="tavily",phase="${phase}"} 1`,
+      );
+    }
+    expect(metrics).toContain(
+      'toolcallstack_search_results_total{provider="tavily",dated="false"} 2',
+    );
+  });
+});
+
+describe("request checks", () => {
+  it.each([
+    [{ startDate: "2026-02-31" }, "not a calendar date"],
+    [{ startDate: "2026-03-10", endDate: "2026-03-01" }, "endDate is before startDate"],
+  ])("refuses %j before anything is sent", async (dates, message) => {
+    const { app, fetchMock } = await setup(async () => json(tavilyBody));
+    close = () => app.close();
+    for (const url of ["/v1/search", "/v1/search/batch"]) {
+      const response = await app.inject({
+        method: "POST",
+        url,
+        payload: { provider: "tavily", providers: ["tavily"], query: "hello", ...dates },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.message).toContain(message);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("gives every result a canonical URL", async () => {
+    const { app } = await setup(async () =>
+      json({ results: [{ url: "http://www.a.com/1/?utm_source=x", title: "One" }] }),
+    );
+    close = () => app.close();
+    const [result] = (await search(app)).json().results;
+    expect(result).toMatchObject({
+      url: "http://www.a.com/1/?utm_source=x",
+      canonicalUrl: "https://a.com/1",
+    });
+  });
+});
+
+describe("cache", () => {
+  it("answers an identical call from the cache: nothing sent, nothing billed, health untouched", async () => {
+    const { app, fetchMock, calls } = await setup(async () => json(tavilyBody));
+    close = () => app.close();
+    const first = (await search(app, { cacheTtlSeconds: 60 })).json();
+    expect(first).toMatchObject({ ok: true, cache: { hit: false } });
+    const second = (await search(app, { cacheTtlSeconds: 60, timeoutMs: 5000 })).json();
+    expect(second).toMatchObject({
+      ok: true,
+      results: first.results,
+      usage: { costUsd: 0, costSource: "cache" },
+      cache: { hit: true, sourceCallId: first.id },
+      retries: { attempts: [] },
+    });
+    expect(second.id).not.toBe(first.id);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(calls.map((call) => call.response.cache?.hit)).toEqual([false, true]);
+    const status = (await app.inject({ method: "GET", url: "/v1/status" })).json();
+    expect(status.providers.find((p: { id: string }) => p.id === "tavily").recentCalls).toBe(1);
+    // Without cacheTtlSeconds, and with the default of 0, nothing is reused.
+    expect((await search(app)).json().cache).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends identical calls in flight upstream once", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { app, fetchMock } = await setup(async () => {
+      await gate;
+      return json(tavilyBody);
+    });
+    close = () => app.close();
+    const both = Promise.all([
+      search(app, { cacheTtlSeconds: 60 }),
+      search(app, { cacheTtlSeconds: 60 }),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    const hits = (await both).map((reply) => reply.json().cache.hit).toSorted();
+    expect(hits).toEqual([false, true]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not cache failures", async () => {
+    const { app, fetchMock } = await setup(async () => json({ detail: "bad" }, 400));
+    close = () => app.close();
+    await search(app, { cacheTtlSeconds: 60 });
+    await search(app, { cacheTtlSeconds: 60 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

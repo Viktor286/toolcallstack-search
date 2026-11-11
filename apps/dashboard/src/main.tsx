@@ -31,6 +31,7 @@ createRoot(document.getElementById("root")!).render(
             <Route element={<AppShell />}>
               <Route index element={<OverviewPage />} />
               <Route path="calls" element={<CallsPage />} />
+              <Route path="calls/:id" element={<CallsPage />} />
               <Route path="usage" element={<UsagePage />} />
               <Route path="playground" element={<PlaygroundPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />

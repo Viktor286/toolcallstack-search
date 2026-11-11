@@ -9,6 +9,8 @@ COPY apps/dashboard/package.json apps/dashboard/
 
 FROM base AS dashboard
 RUN pnpm install --frozen-lockfile --filter @toolcallstack/search-dashboard
+# The dashboard imports a few gateway modules, whose tsconfig extends the root one.
+COPY tsconfig.base.json ./
 COPY apps apps
 RUN pnpm --filter @toolcallstack/search-dashboard build
 

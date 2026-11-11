@@ -54,6 +54,7 @@ function call(overrides: {
     upstream: { status: ok ? 200 : 500, requestId: null },
     warnings: [],
     error: ok ? null : { type: "upstream_error", message: "x", upstreamStatus: 500 },
+    cache: null,
     fallback: { tried: [] },
   };
 }
@@ -78,11 +79,12 @@ describe.skipIf(!databaseUrl)("postgres store", () => {
     });
   const list = (query: Record<string, string> = {}) =>
     store.listCalls(callsQuerySchema.parse(query));
+  const count = async (query: Record<string, string>) => (await list(query)).calls.length;
 
   beforeAll(async () => {
     store = createPostgresStore(databaseUrl!, { storeRaw: true });
     await store.sql`DROP SCHEMA IF EXISTS gateway CASCADE`;
-    expect(await migrate(store.sql)).toHaveLength(5);
+    expect(await migrate(store.sql)).toHaveLength(6);
     expect(await migrate(store.sql)).toEqual([]);
   });
   afterAll(() => store.close());
@@ -134,6 +136,18 @@ describe.skipIf(!databaseUrl)("postgres store", () => {
     expect(await store.getCall(calls[0]!.id)).toEqual({ ...calls[0], raw: { upstream: true } });
     expect(await store.getCall(calls[2]!.id)).toEqual(calls[2]);
     expect(await store.getCall(crypto.randomUUID())).toBeNull();
+  });
+
+  it("filters by error type and by text in the query", async () => {
+    const at = "2026-11-09T10:00:00.000Z";
+    await save({ ...call({ provider: "tavily", sentAt: at }), query: "Fed rate 50%_cut" });
+    await save({ ...call({ provider: "tavily", sentAt: at, ok: false }), query: "fed rates" });
+    expect(await count({ q: "FED" })).toBe(2);
+    // LIKE wildcards in the text are matched literally.
+    expect(await count({ q: "50%_" })).toBe(1);
+    expect(await count({ q: "%" })).toBe(1);
+    expect(await count({ errorType: "upstream_error" })).toBe(1);
+    expect(await count({ errorType: "timeout" })).toBe(0);
   });
 
   it("summarises usage and balance change per provider and key", async () => {
@@ -314,6 +328,32 @@ describe.skipIf(!databaseUrl)("postgres store", () => {
       ["2026-11-09T00:00:00.000Z", "exa", 1],
       ["2026-11-09T00:00:00.000Z", "tavily", 4],
     ]);
+  });
+
+  it("counts cache hits as calls but leaves them out of latency, spend and health", async () => {
+    const sentAt = "2026-11-09T10:05:00.000Z";
+    await save(call({ provider: "tavily", sentAt, estimatedCostUsd: 0.008 }));
+    await save({
+      ...call({ provider: "tavily", sentAt: "2026-11-09T10:06:00.000Z" }),
+      timing: { ...call({ provider: "tavily", sentAt }).timing, latencyMs: 0 },
+      retries: { count: 0, backoffMs: 0, attempts: [] },
+      usage: { costUsd: 0, costSource: "cache" },
+      cache: { hit: true, ageMs: 60_000, sourceCallId: crypto.randomUUID() },
+    });
+    const [point] = await store.stats(
+      new Date("2026-11-09T00:00:00Z"),
+      new Date("2026-11-10T00:00:00Z"),
+      "hour",
+    );
+    expect(point).toMatchObject({ calls: 2, cacheHits: 1, p50LatencyMs: 10, p95LatencyMs: 10 });
+    const [spend] = await store.spendSince(
+      new Date("2026-11-09T00:00:00Z"),
+      new Date("2026-11-01T00:00:00Z"),
+    );
+    expect(spend?.day.calls).toBe(1);
+    expect(await store.recentOutcomes(20)).toHaveLength(1);
+    const { calls } = await list();
+    expect(calls.map((c) => c.cache?.hit ?? false).toSorted()).toEqual([false, true]);
   });
 
   it("reports billed spend since the start of the day and month", async () => {

@@ -107,6 +107,7 @@ export function UsagePage() {
     };
   });
   const calls = totals.reduce((sum, row) => sum + row.calls, 0);
+  const cacheHits = points.reduce((sum, point) => sum + point.cacheHits, 0);
   const failures = totals.reduce((sum, row) => sum + row.failures, 0);
   const cost = totals.reduce((sum, row) => sum + (row.cost ?? 0), 0);
   const unpriced = totals
@@ -140,7 +141,13 @@ export function UsagePage() {
         // While a new range loads, the previous render stays in place, dimmed.
         <div className={`space-y-4 transition-opacity ${stats.isFetching ? "opacity-60" : ""}`}>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <Tile icon={Activity} label="Calls" help="callsTotal" value={compact(calls)} />
+            <Tile
+              icon={Activity}
+              label="Calls"
+              help="callsTotal"
+              value={compact(calls)}
+              note={cacheHits > 0 ? `${compact(cacheHits)} from the cache` : undefined}
+            />
             <Tile
               icon={TriangleAlert}
               label="Failed"

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRightLeft,
+  Archive,
   Coins,
   CircleDollarSign,
   FileJson,
@@ -14,15 +15,17 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { PhaseBar } from "@/components/charts/phase-bar";
-import { CodeBlock } from "@/components/json-view";
+import { CodeBlock, CopyButton } from "@/components/json-view";
 import { MetricHelp } from "@/components/metric-help";
 import { ProviderName } from "@/components/provider-name";
 import { ResultList } from "@/components/result-list";
+import { QueryError } from "@/components/query-state";
 import { StatusLabel } from "@/components/status";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { api, type SearchResponse } from "@/lib/api";
 import type { MetricId } from "@/lib/metric-docs";
-import { callCost, dateTime, ms, usd } from "@/lib/format";
+import { ago, callCost, dateTime, ms, usd } from "@/lib/format";
 
 function Fact({
   label,
@@ -57,15 +60,37 @@ function Heading({ icon: Icon, children }: { icon: LucideIcon; children: React.R
   );
 }
 
-/** Everything the gateway recorded about one call. */
-export function CallDetail({ call }: { call: SearchResponse }) {
-  // The list omits raw upstream bodies; fetch the single call to get one if it was stored.
+/**
+ * Everything the gateway recorded about one call. `initial` is the row from the
+ * list, shown at once; the call is fetched by id for a link opened on its own
+ * and for the raw upstream body, which the list leaves out.
+ */
+export function CallDetail({ id, initial }: { id: string; initial?: SearchResponse }) {
   const full = useQuery({
-    queryKey: ["call", call.id],
-    queryFn: () => api<SearchResponse>(`/v1/calls/${call.id}`),
+    queryKey: ["call", id],
+    queryFn: () => api<SearchResponse>(`/v1/calls/${id}`),
   });
+  const call = full.data ?? initial;
+  if (!call) {
+    if (full.error) {
+      return (
+        <div className="px-4">
+          <QueryError error={full.error} />
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-3 px-4">
+        <Skeleton className="h-5 w-1/2" />
+        <Skeleton className="h-24" />
+      </div>
+    );
+  }
   const raw = full.data?.raw;
   const cost = callCost(call.usage);
+  const link = () => `${window.location.origin}/ui/calls/${call.id}`;
+  // A cache hit made no upstream request, so it has no attempt to time.
+  const hit = call.cache?.hit === true;
 
   return (
     <div className="space-y-5 px-4 pb-8">
@@ -86,7 +111,7 @@ export function CallDetail({ call }: { call: SearchResponse }) {
           {ms(call.timing.totalMs)}
         </Fact>
         <Fact label="Final attempt" icon={Gauge} help="finalAttempt">
-          {ms(call.timing.latencyMs)}
+          {hit ? "none (cache)" : ms(call.timing.latencyMs)}
         </Fact>
         <Fact label="Retries" icon={RotateCw} help="retries">
           {call.retries.count}
@@ -106,12 +131,21 @@ export function CallDetail({ call }: { call: SearchResponse }) {
         <Fact label="Backoff" icon={Hourglass} help="backoff">
           {ms(call.retries.backoffMs)}
         </Fact>
+        {call.cache && (
+          <Fact label="Cache" icon={Archive} help="cache">
+            {call.cache.hit
+              ? `hit, ${ago(new Date(Date.now() - (call.cache.ageMs ?? 0)).toISOString())}`
+              : "miss"}
+          </Fact>
+        )}
       </dl>
 
-      <section>
-        <Heading icon={Timer}>Where the time went (final attempt)</Heading>
-        <PhaseBar queuedMs={call.timing.queuedMs} phases={call.timing.phases} />
-      </section>
+      {!hit && (
+        <section>
+          <Heading icon={Timer}>Where the time went (final attempt)</Heading>
+          <PhaseBar queuedMs={call.timing.queuedMs} phases={call.timing.phases} />
+        </section>
+      )}
 
       {call.retries.attempts.length > 1 && (
         <section>
@@ -170,7 +204,10 @@ export function CallDetail({ call }: { call: SearchResponse }) {
           <CodeBlock value={raw} className="max-h-96" />
         </section>
       )}
-      <p className="font-mono text-xs text-muted-foreground">{call.id}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <CopyButton text={link} label="Copy link" />
+        <span className="font-mono text-xs text-muted-foreground">{call.id}</span>
+      </div>
     </div>
   );
 }

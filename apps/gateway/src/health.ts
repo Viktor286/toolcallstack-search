@@ -1,3 +1,4 @@
+import { NOT_THE_PROVIDER } from "./error-types.ts";
 import type { SearchResponse } from "./schema.ts";
 
 /** How many recent calls per provider health is judged on. */
@@ -30,16 +31,8 @@ export class HealthTracker {
   readonly #states = new Map<string, State>();
 
   record(response: SearchResponse): void {
-    // These say nothing about the provider: nothing was sent to it.
-    const type = response.error?.type;
-    if (
-      type === "unknown_provider" ||
-      type === "not_configured" ||
-      type === "throttled" ||
-      type === "budget_exceeded"
-    ) {
-      return;
-    }
+    // These say nothing about the provider: nothing was sent, or the caller's request was at fault.
+    if (response.error && NOT_THE_PROVIDER.includes(response.error.type)) return;
 
     const state = this.#states.get(response.provider) ?? {
       samples: [],

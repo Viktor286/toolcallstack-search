@@ -99,6 +99,10 @@ const configSchema = z.object({
       minRemaining: z.number().min(0).optional(),
     }),
   ),
+  /** Default for a request's `cacheTtlSeconds`; 0 leaves caching off unless a request asks. */
+  CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(0),
+  /** Most answers the in-memory cache holds per instance. */
+  CACHE_MAX_ENTRIES: z.coerce.number().int().min(1).default(1000),
   /** Delete logged calls and balance snapshots older than this many days; 0 keeps them forever. */
   CALL_LOG_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
   /** Drop stored raw upstream bodies older than this many days; 0 keeps them as long as the call. */

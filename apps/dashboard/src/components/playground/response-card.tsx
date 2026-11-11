@@ -85,7 +85,9 @@ export function ResponseCard({ response, name, summary, alsoIn }: Props) {
           />
           <StatusLabel
             kind={response.ok ? "ok" : "failed"}
-            label={response.ok ? "OK" : response.error?.type}
+            label={
+              response.ok ? (response.cache?.hit ? "OK · cached" : "OK") : response.error?.type
+            }
           />
         </CardTitle>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 pt-2 sm:grid-cols-4">

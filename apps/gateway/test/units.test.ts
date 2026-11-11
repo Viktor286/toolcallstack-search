@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import zlib from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { pollBalances } from "../src/balances.ts";
+import { canonicalUrl } from "../src/canonical-url.ts";
 import { estimateCost, withCost } from "../src/cost.ts";
 import { ProviderLimiter, QueueTimeoutError } from "../src/limiter.ts";
 import { BudgetTracker } from "../src/budget.ts";
@@ -428,5 +429,21 @@ describe("version", () => {
       const pkg = JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
       expect(pkg.version, path).toBe(VERSION);
     }
+  });
+});
+
+describe("canonicalUrl", () => {
+  it("gives one page one key however it is linked", () => {
+    expect(canonicalUrl("http://www.Example.com/a/?utm_source=x&b=2&a=1#top")).toBe(
+      "https://example.com/a?a=1&b=2",
+    );
+    expect(canonicalUrl("https://m.example.com/a")).toBe(
+      canonicalUrl("https://amp.example.com/a/"),
+    );
+    expect(canonicalUrl("https://example.com/a?id=1")).not.toBe(
+      canonicalUrl("https://example.com/a?id=2"),
+    );
+    expect(canonicalUrl("https://example.com:8443/")).toBe("https://example.com:8443");
+    expect(canonicalUrl("not a url ")).toBe("not a url");
   });
 });

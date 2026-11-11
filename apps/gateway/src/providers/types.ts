@@ -28,7 +28,8 @@ export interface ParseContext {
 }
 
 export interface ParsedResponse {
-  results: Omit<SearchResult, "position">[];
+  /** The gateway adds each result's position and canonical URL. */
+  results: Omit<SearchResult, "position" | "canonicalUrl">[];
   /** Only what the provider itself reported for this call. */
   usage?: { credits?: number; costUsd?: number };
   upstreamRequestId?: string;

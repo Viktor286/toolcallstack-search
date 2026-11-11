@@ -68,6 +68,8 @@ for (const response of batch.responses) {
     ].join(" "),
   );
   if (!response.ok) console.log(`      ${response.error?.type}: ${response.error?.message}`);
+  // An empty answer is a failure; its warnings say whether the response format changed.
+  else if (!passed) for (const warning of response.warnings) console.log(`      ${warning}`);
 }
 console.log(`\n${batch.responses.length - failures}/${batch.responses.length} providers passed`);
 process.exit(failures > 0 ? 1 : 0);

@@ -1,5 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import postgres from "postgres";
+import { canonicalUrl } from "./canonical-url.ts";
+import { NOT_THE_PROVIDER } from "./error-types.ts";
 import type { Balance } from "./providers/types.ts";
 import type { Spend } from "./budget.ts";
 import type {
@@ -89,6 +91,21 @@ export async function migrate(sql: postgres.Sql): Promise<string[]> {
   return applied;
 }
 
+/**
+ * A stored response in today's shape. Calls logged by an older version lack
+ * fields added since, which the response schema requires.
+ */
+function current(response: SearchResponse): SearchResponse {
+  return {
+    ...response,
+    results: response.results.map((result) => ({
+      ...result,
+      canonicalUrl: result.canonicalUrl ?? canonicalUrl(result.url),
+    })),
+    cache: response.cache ?? null,
+  };
+}
+
 /** Keyset position in the newest-first call list. */
 function encodeCursor(sentAt: string, id: string): string {
   return Buffer.from(`${sentAt}|${id}`).toString("base64url");
@@ -176,6 +193,7 @@ export function createPostgresStore(
         usage: sql.json(response.usage),
         key_fingerprint: keyFingerprint,
         client,
+        cache_hit: response.cache?.hit ?? false,
         credits: response.usage.credits ?? null,
         reported_cost_usd: response.usage.costUsd ?? null,
         estimated_cost_usd: response.usage.estimatedCostUsd ?? null,
@@ -197,13 +215,15 @@ export function createPostgresStore(
           ${query.label ? sql`AND label = ${query.label}` : sql``}
           ${query.client ? sql`AND client = ${query.client}` : sql``}
           ${query.ok ? sql`AND ok = ${query.ok === "true"}` : sql``}
+          ${query.errorType ? sql`AND error_type = ${query.errorType}` : sql``}
+          ${query.q ? sql`AND query ILIKE ${`%${query.q.replace(/[\\%_]/g, "\\$&")}%`}` : sql``}
           ${query.batchId ? sql`AND batch_id = ${query.batchId}` : sql``}
           ${query.from ? sql`AND sent_at >= ${query.from}` : sql``}
           ${query.to ? sql`AND sent_at < ${query.to}` : sql``}
           ${after ? sql`AND (sent_at, id) < (${after.sentAt}::timestamptz, ${after.id}::uuid)` : sql``}
         ORDER BY sent_at DESC, id DESC
         LIMIT ${query.limit + 1}`;
-      const calls = rows.slice(0, query.limit).map((row) => row.response);
+      const calls = rows.slice(0, query.limit).map((row) => current(row.response));
       const last = calls.at(-1);
       return {
         calls,
@@ -216,7 +236,8 @@ export function createPostgresStore(
       const [row] = await sql<{ response: SearchResponse; raw: unknown }[]>`
         SELECT response, raw FROM gateway.search_calls WHERE id = ${id} AND response IS NOT NULL`;
       if (!row) return null;
-      return row.raw === null ? row.response : { ...row.response, raw: row.raw };
+      const response = current(row.response);
+      return row.raw === null ? response : { ...response, raw: row.raw };
     },
 
     async saveBalance(snapshot) {
@@ -353,6 +374,7 @@ export function createPostgresStore(
           calls: number;
           failures: number;
           retries: number;
+          cache_hits: number;
           p50: number | null;
           p95: number | null;
           queued: number | null;
@@ -363,9 +385,11 @@ export function createPostgresStore(
           count(*)::int AS calls,
           count(*) FILTER (WHERE NOT ok)::int AS failures,
           coalesce(sum(retry_count), 0)::int AS retries,
-          (percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok))::float8 AS p50,
-          (percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok))::float8 AS p95,
-          avg(queued_ms)::float8 AS queued,
+          count(*) FILTER (WHERE cache_hit)::int AS cache_hits,
+          -- A cache hit took no upstream time, so it is left out of latency and queueing.
+          (percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok AND NOT cache_hit))::float8 AS p50,
+          (percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok AND NOT cache_hit))::float8 AS p95,
+          (avg(queued_ms) FILTER (WHERE NOT cache_hit))::float8 AS queued,
           sum(coalesce(reported_cost_usd, estimated_cost_usd))::float8 AS cost_usd
         FROM gateway.search_calls
         WHERE sent_at >= ${from} AND sent_at < ${to}
@@ -377,6 +401,7 @@ export function createPostgresStore(
         calls: row.calls,
         failures: row.failures,
         retries: row.retries,
+        cacheHits: row.cache_hits,
         p50LatencyMs: row.p50,
         p95LatencyMs: row.p95,
         avgQueuedMs: row.queued,
@@ -395,7 +420,7 @@ export function createPostgresStore(
         FROM gateway.search_calls,
           LATERAL (VALUES ('day', ${dayStart}::timestamptz), ('month', ${monthStart}::timestamptz))
             AS periods (period, started)
-        WHERE ok AND sent_at >= started
+        WHERE ok AND NOT cache_hit AND sent_at >= started
         GROUP BY provider, period`;
       const byProvider = new Map<string, ProviderSpend>();
       for (const row of rows) {
@@ -425,9 +450,9 @@ export function createPostgresStore(
         FROM (
           SELECT *, row_number() OVER (PARTITION BY provider ORDER BY sent_at DESC) AS recency
           FROM gateway.search_calls
-          -- These failures happen before anything is sent, so they say nothing about the provider.
-          WHERE error_type IS NULL
-            OR error_type NOT IN ('not_configured', 'throttled', 'budget_exceeded')
+          -- These failures say nothing about the provider: nothing was sent, or the caller was at fault.
+          WHERE NOT cache_hit
+            AND (error_type IS NULL OR NOT (error_type = ANY(${NOT_THE_PROVIDER as string[]})))
         ) calls
         WHERE recency <= ${perProvider}
         ORDER BY provider, sent_at`;

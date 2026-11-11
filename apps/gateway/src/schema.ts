@@ -1,14 +1,37 @@
 import { z } from "zod";
+import { errorTypes } from "./error-types.ts";
+
+export { errorTypes, type ErrorType } from "./error-types.ts";
 
 const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
+  // The format alone lets 2026-02-31 through; a provider would reject it, or worse, roll it over.
+  .refine((text) => {
+    // Runs even when the format check failed, so the date may not parse at all.
+    const date = new Date(`${text}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === text;
+  }, "not a calendar date")
   .describe("Calendar date, YYYY-MM-DD (UTC)");
+
+/** A date range that ends before it starts would be sent upstream and fail there. */
+function datesInOrder(params: { startDate?: string; endDate?: string }, ctx: z.RefinementCtx) {
+  if (params.startDate && params.endDate && params.startDate > params.endDate) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["endDate"],
+      message: "endDate is before startDate",
+    });
+  }
+}
 
 export const freshnessValues = ["hour", "day", "week", "month", "year"] as const;
 
-/** Provider-independent search parameters. */
-export const searchParamsSchema = z.object({
+/**
+ * Provider-independent search parameters, as a plain object so the request
+ * schemas can extend it; checks across fields are added to each final schema.
+ */
+const searchParamsObject = z.object({
   query: z.string().min(1).max(2000),
   maxResults: z.number().int().min(1).max(100).default(10),
   topic: z.enum(["general", "news"]).default("general"),
@@ -52,10 +75,21 @@ export const searchParamsSchema = z.object({
     .max(10)
     .optional()
     .describe("Retries after a transient failure; 0 makes exactly one upstream request"),
+  cacheTtlSeconds: z
+    .number()
+    .int()
+    .min(0)
+    .max(86_400)
+    .optional()
+    .describe(
+      "Reuse an identical successful answer up to this many seconds old, and keep this answer as long; 0 turns caching off. Identical calls in flight share one upstream request.",
+    ),
 });
+export const searchParamsSchema = searchParamsObject.superRefine(datesInOrder);
 export type SearchParams = z.infer<typeof searchParamsSchema>;
 
-export const searchRequestSchema = searchParamsSchema.extend({
+/** The search request without its checks across fields, for picking tool arguments from. */
+export const searchRequestObject = searchParamsObject.extend({
   provider: z.string().min(1),
   fallbacks: z
     .array(z.string().min(1))
@@ -63,6 +97,7 @@ export const searchRequestSchema = searchParamsSchema.extend({
     .optional()
     .describe("Providers to try in order when the previous one fails, after its own retries"),
 });
+export const searchRequestSchema = searchRequestObject.superRefine(datesInOrder);
 
 const batchTargetSchema = z.union([
   z.string().min(1),
@@ -77,18 +112,25 @@ const batchTargetSchema = z.union([
   }),
 ]);
 
-export const batchRequestSchema = searchParamsSchema.extend({
-  providers: z
-    .array(batchTargetSchema)
-    .min(1)
-    .max(32)
-    .describe("Providers to query at the same instant; use objects to run labelled variants"),
-});
+export const batchRequestSchema = searchParamsObject
+  .extend({
+    providers: z
+      .array(batchTargetSchema)
+      .min(1)
+      .max(32)
+      .describe("Providers to query at the same instant; use objects to run labelled variants"),
+  })
+  .superRefine(datesInOrder);
 export type BatchRequest = z.infer<typeof batchRequestSchema>;
 
 export const searchResultSchema = z.object({
   position: z.number().int().describe("1-based rank in the upstream response"),
   url: z.string(),
+  canonicalUrl: z
+    .string()
+    .describe(
+      "The url normalised for matching the same page across providers (https, host without www, no tracking parameters); not for fetching",
+    ),
   title: z.string(),
   snippet: z.string(),
   publishedAt: z
@@ -115,23 +157,12 @@ export const usageSchema = z.object({
     .optional()
     .describe("List-price cost from the gateway's price table, ignoring free credits"),
   costSource: z
-    .enum(["reported", "estimated", "unknown"])
-    .describe("Which figure to use: costUsd, estimatedCostUsd, or neither is known"),
+    .enum(["reported", "estimated", "unknown", "cache"])
+    .describe(
+      "Which figure to use: costUsd, estimatedCostUsd, neither is known, or cache (answered from the cache, nothing billed)",
+    ),
 });
 export type Usage = z.infer<typeof usageSchema>;
-
-export const errorTypes = [
-  "unknown_provider",
-  "not_configured",
-  "timeout",
-  "network",
-  "rate_limited",
-  "throttled",
-  "budget_exceeded",
-  "upstream_error",
-  "bad_response",
-] as const;
-export type ErrorType = (typeof errorTypes)[number];
 
 export const searchErrorSchema = z.object({
   type: z.enum(errorTypes),
@@ -203,6 +234,19 @@ export const searchResponseSchema = z.object({
   }),
   warnings: z.array(z.string()),
   error: searchErrorSchema.nullable(),
+  cache: z
+    .object({
+      hit: z.boolean(),
+      ageMs: z.number().nullable().describe("Age of the reused answer; null on a miss"),
+      sourceCallId: z
+        .string()
+        .nullable()
+        .describe("Id of the call whose answer was reused; null on a miss"),
+    })
+    .nullable()
+    .describe(
+      "Null when the call did not allow caching. A hit sent nothing upstream and cost nothing; its timing is the gateway's own.",
+    ),
   fallback: z
     .object({
       tried: z.array(
@@ -306,6 +350,13 @@ export const callsQuerySchema = z.object({
   label: z.string().optional(),
   client: z.string().optional().describe("Name of the gateway API key that made the call"),
   ok: z.enum(["true", "false"]).optional(),
+  errorType: z.enum(errorTypes).optional().describe("Only failed calls with this error type"),
+  q: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Only calls whose query contains this text, ignoring case"),
   batchId: z.uuid().optional(),
   from: z.iso.datetime({ offset: true }).optional().describe("Sent at or after this time"),
   to: z.iso.datetime({ offset: true }).optional().describe("Sent before this time"),
@@ -342,7 +393,11 @@ export const statsResponseSchema = z.object({
       calls: z.number().int(),
       failures: z.number().int(),
       retries: z.number().int(),
-      p50LatencyMs: z.number().nullable().describe("Median latency of successful calls"),
+      cacheHits: z.number().int().describe("Calls answered from the cache, included in calls"),
+      p50LatencyMs: z
+        .number()
+        .nullable()
+        .describe("Median latency of successful calls, cache hits excluded"),
       p95LatencyMs: z.number().nullable(),
       avgQueuedMs: z.number().nullable(),
       costUsd: z.number().nullable().describe("Reported cost where known, else the estimate"),

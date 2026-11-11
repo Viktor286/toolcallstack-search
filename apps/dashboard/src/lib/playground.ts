@@ -1,3 +1,4 @@
+import { canonicalUrl } from "../../../gateway/src/canonical-url.ts";
 import type { ProviderInfo, SearchResponse } from "@/lib/api";
 
 /** Everything the playground form holds; strings stay as typed until a request is built. */
@@ -13,6 +14,8 @@ export interface PlaygroundForm {
   includeDomains: string;
   excludeDomains: string;
   includeRaw: boolean;
+  /** Seconds as typed; empty leaves the gateway's default. */
+  cacheTtlSeconds: string;
   /** JSON text per provider id, merged into that provider's upstream request. */
   options: Record<string, string>;
 }
@@ -29,6 +32,7 @@ export const EMPTY_FORM: PlaygroundForm = {
   includeDomains: "",
   excludeDomains: "",
   includeRaw: false,
+  cacheTtlSeconds: "",
   options: {},
 };
 
@@ -47,6 +51,14 @@ function domains(text: string): string[] {
         .replace(/\/.*$/, ""),
     )
     .filter(Boolean);
+}
+
+/** A whole number of seconds the gateway accepts, or null for none. */
+function cacheSeconds(text: string): number | null {
+  const seconds = Number(text);
+  return text.trim() !== "" && Number.isInteger(seconds) && seconds >= 0 && seconds <= 86_400
+    ? seconds
+    : null;
 }
 
 /** Parse one provider's options text; empty text means no options. */
@@ -85,6 +97,9 @@ export function buildRequest(form: PlaygroundForm): PlaygroundRequest {
     ...(exclude.length > 0 ? { excludeDomains: exclude } : {}),
     ...(form.country.trim() ? { country: form.country.trim().toUpperCase() } : {}),
     ...(form.includeRaw ? { includeRaw: true } : {}),
+    ...(cacheSeconds(form.cacheTtlSeconds) === null
+      ? {}
+      : { cacheTtlSeconds: cacheSeconds(form.cacheTtlSeconds) }),
   };
   const optionsFor = (id: string) => parseOptions(form.options[id]).value;
 
@@ -148,24 +163,11 @@ export function curlCommand(request: PlaygroundRequest, origin: string, withAuth
   ].join(" \\\n");
 }
 
-const TRACKING = /^(utm_\w+|fbclid|gclid|ref|ref_src|mc_cid|mc_eid)$/i;
-
-/** Reduce a URL to what identifies the page, so the same result from two providers matches. */
-export function normalizeUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.toLowerCase().replace(/^(www|m|amp)\./, "");
-    const path = parsed.pathname.replace(/\/+$/, "");
-    const params = [...parsed.searchParams.entries()]
-      .filter(([name]) => !TRACKING.test(name))
-      .toSorted(([a], [b]) => a.localeCompare(b))
-      .map(([name, value]) => `${name}=${value}`)
-      .join("&");
-    return `${host}${path}${params ? `?${params}` : ""}`;
-  } catch {
-    return url.trim().toLowerCase();
-  }
-}
+/**
+ * Reduce a URL to what identifies the page, so the same result from two providers matches.
+ * The gateway's own rule, which also fills each result's `canonicalUrl`.
+ */
+export const normalizeUrl = canonicalUrl;
 
 export function hostOf(url: string): string {
   try {
@@ -256,6 +258,7 @@ export function hasAdvanced(form: PlaygroundForm): boolean {
       (value) => value.trim() !== "",
     ) ||
     form.includeRaw ||
+    form.cacheTtlSeconds.trim() !== "" ||
     Object.values(form.options).some((text) => text.trim() !== "")
   );
 }
@@ -274,6 +277,7 @@ export function formToParams(form: PlaygroundForm): URLSearchParams {
   if (form.includeDomains.trim()) params.set("include", domains(form.includeDomains).join(","));
   if (form.excludeDomains.trim()) params.set("exclude", domains(form.excludeDomains).join(","));
   if (form.includeRaw) params.set("raw", "1");
+  if (cacheSeconds(form.cacheTtlSeconds) !== null) params.set("cache", form.cacheTtlSeconds.trim());
   return params;
 }
 
@@ -292,5 +296,6 @@ export function formFromParams(params: URLSearchParams): PlaygroundForm {
     includeDomains: params.get("include") ?? "",
     excludeDomains: params.get("exclude") ?? "",
     includeRaw: params.get("raw") === "1",
+    cacheTtlSeconds: params.get("cache") ?? "",
   };
 }

@@ -42,6 +42,7 @@ const point = (bucket: string, over = {}) => ({
   retries: 0,
   p50LatencyMs: 300,
   p95LatencyMs: 900,
+  cacheHits: 0,
   avgQueuedMs: null,
   costUsd: 0.05,
   ...over,

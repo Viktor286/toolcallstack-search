@@ -5,6 +5,7 @@ import {
   batchResponseSchema,
   callsResponseSchema,
   providerInfoSchema,
+  searchRequestObject,
   searchRequestSchema,
   searchResponseSchema,
   statusResponseSchema,
@@ -43,7 +44,7 @@ export const schemas = {
 export type SchemaName = keyof typeof schemas;
 
 /** The arguments worth exposing to a model; operational knobs stay out of its way. */
-export const toolInput = searchRequestSchema.pick({
+export const toolInput = searchRequestObject.pick({
   query: true,
   provider: true,
   fallbacks: true,
@@ -205,6 +206,7 @@ If the gateway has API keys configured, every \`/v1/*\` request needs \`Authoriz
 | \`GET /v1/status\` | Health of the gateway and of each provider |
 | \`GET /v1/calls\`, \`GET /v1/calls/{id}\` | Logged calls, newest first |
 | \`GET /v1/usage\` | Calls, cost and account balance change per provider |
+| \`GET /v1/stats\` | Calls, failures, cache hits, latency and cost per provider per hour or day |
 | \`POST /mcp\` | MCP server (Streamable HTTP): tools \`web_search\`, \`web_search_batch\`, \`list_providers\` |
 | \`GET /health\` | Liveness: 200 while the process is serving |
 
@@ -219,7 +221,7 @@ If the gateway has API keys configured, every \`/v1/*\` request needs \`Authoriz
 | \`maxResults\` | integer | 10 | 1 to 100; capped at the provider's maximum, with a warning |
 | \`topic\` | \`general\` or \`news\` | \`general\` | \`news\` uses the provider's news index where it has one |
 | \`freshness\` | \`hour\`, \`day\`, \`week\`, \`month\`, \`year\` | none | Only results published within that window |
-| \`startDate\`, \`endDate\` | \`YYYY-MM-DD\` | none | Publish date range, UTC |
+| \`startDate\`, \`endDate\` | \`YYYY-MM-DD\` | none | Publish date range, UTC; real dates, start not after end |
 | \`includeDomains\`, \`excludeDomains\` | string[] | none | Domain allow and block lists |
 | \`country\` | ISO 3166-1 alpha-2 | none | Result localisation |
 | \`options\` | object | none | Provider-specific fields, merged into the upstream request unchanged |
@@ -228,6 +230,7 @@ If the gateway has API keys configured, every \`/v1/*\` request needs \`Authoriz
 | \`maxRetries\` | integer | 5 | Retries after a transient failure; 0 makes exactly one upstream request |
 | \`maxQueueMs\` | integer | 30000 | Longest wait under the provider's rate limit; 0 fails at once |
 | \`includeRaw\` | boolean | false | Also return the untouched upstream body as \`raw\` |
+| \`cacheTtlSeconds\` | integer | 0 | Reuse an identical successful answer up to this many seconds old; 0 is off |
 
 A parameter the chosen provider cannot honour is dropped, and \`warnings\` says so. It is never an error and never silent. Check \`warnings\` before relying on a filter.
 
@@ -241,6 +244,7 @@ A parameter the chosen provider cannot honour is dropped, and \`warnings\` says 
 | \`provider\`, \`label\` | The provider that answered (after fallbacks) and the variant label |
 | \`ok\` | True when results were obtained |
 | \`results[]\` | \`position\` (1-based), \`url\`, \`title\`, \`snippet\`, \`score\` (provider relevance or null), \`source\` (\`web\` or \`news\`) |
+| \`results[].canonicalUrl\` | The url normalised to match the same page across providers; not for fetching |
 | \`results[].publishedAt\` | Publish time in ISO 8601 UTC, or null when the provider gave none |
 | \`results[].publishedRaw\` | The provider's own value, unchanged |
 | \`results[].publishedPrecision\` | \`datetime\`, \`date\` (time unknown, midnight UTC used) or \`relative\` (derived from text such as "2 hours ago") |
@@ -252,19 +256,20 @@ A parameter the chosen provider cannot honour is dropped, and \`warnings\` says 
 | \`retries\` | \`count\`, \`backoffMs\`, and \`attempts[]\` with timing, status and error of every upstream request |
 | \`usage.credits\`, \`usage.costUsd\` | What the provider reported for this call |
 | \`usage.estimatedCostUsd\` | List-price estimate from the gateway's price table |
-| \`usage.costSource\` | \`reported\` (use \`costUsd\`), \`estimated\` (use \`estimatedCostUsd\`) or \`unknown\` |
+| \`usage.costSource\` | \`reported\` (use \`costUsd\`), \`estimated\` (use \`estimatedCostUsd\`), \`unknown\`, or \`cache\` (nothing billed) |
 | \`upstream\` | The provider's HTTP \`status\` and \`requestId\` |
 | \`warnings[]\` | Parameters that were dropped, widened or capped |
 | \`error\` | Null, or \`{type, message, upstreamStatus}\` |
+| \`cache\` | Null unless caching was allowed; \`{hit, ageMs, sourceCallId}\`. A hit sent nothing upstream |
 | \`fallback.tried[]\` | Providers that failed before this one answered |
 
 ## Errors
 
-\`/v1/search\` returns the full response body on failure too, with \`ok: false\`.
+\`/v1/search\` returns the full response body on failure too, with \`ok: false\`. Only 400, 401 and 503 \`overloaded\` answer with the short \`{error: {type, message}}\` shape.
 
 | HTTP | \`error.type\` | Meaning | What to do |
 | --- | --- | --- | --- |
-| 400 | \`invalid_request\` | The body failed validation | Fix the request; \`message\` names the field |
+| 400 | \`invalid_request\` | The body failed validation, including impossible dates | Fix the request; \`message\` names the field |
 | 401 | \`unauthorized\` | Missing or wrong gateway key | Send the bearer token |
 | 404 | \`unknown_provider\` | No such provider id | Use an id from \`/v1/providers\` |
 | 503 | \`not_configured\` | The provider's API key is not set on the gateway | Use another provider |
@@ -272,11 +277,14 @@ A parameter the chosen provider cannot honour is dropped, and \`warnings\` says 
 | 429 | \`budget_exceeded\` | The provider's spend cap on the gateway is used up; nothing was sent | Use another provider; \`message\` says when the cap resets |
 | 429 | \`throttled\` | No slot under the gateway's limit within \`maxQueueMs\`; nothing was sent | Raise \`maxQueueMs\`, or use another provider |
 | 504 | \`timeout\` | No response within \`timeoutMs\`, after retries | Retry later or raise \`timeoutMs\` |
-| 502 | \`upstream_error\` | The provider answered an error status | Read \`message\`; a 4xx usually means bad \`options\` or a bad key |
+| 422 | \`upstream_invalid_request\` | The provider rejected the request (400, 404, 422) | Read \`message\`; usually a bad field in \`options\` |
+| 502 | \`auth_error\` | The provider rejected the gateway's key for it | Use another provider |
+| 502 | \`quota_exceeded\` | The provider's account is out of credits or over its plan | Use another provider |
+| 502 | \`upstream_error\` | Any other error status from the provider | Read \`message\`; retry later |
 | 502 | \`network\`, \`bad_response\` | Connection failure, or a body that could not be parsed | Retry later |
 | 503 | \`overloaded\` | The gateway is shedding load | Retry after a second |
 
-Timeouts, network errors, 429 and 5xx from a provider are retried automatically with exponential backoff, so a client does not need its own retry loop for those.
+Timeouts, network errors, 429 and 5xx from a provider are retried automatically with exponential backoff, so a client does not need its own retry loop for those. Other 4xx answers are not retried.
 
 ## Providers
 

@@ -394,6 +394,16 @@ export function PlaygroundPage() {
                           onChange={(event) => patch({ country: event.target.value })}
                         />
                       </Field>
+                      <Field label="Reuse answers up to (seconds)">
+                        <Input
+                          type="number"
+                          min={0}
+                          max={86400}
+                          placeholder="off"
+                          value={form.cacheTtlSeconds}
+                          onChange={(event) => patch({ cacheTtlSeconds: event.target.value })}
+                        />
+                      </Field>
                     </div>
                     <Label className="flex items-center gap-2 font-normal">
                       <Checkbox

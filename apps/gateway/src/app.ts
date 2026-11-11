@@ -16,6 +16,7 @@ import {
 } from "fastify-type-provider-zod";
 import { balanceCredential, startBalancePoller } from "./balances.ts";
 import { BudgetTracker } from "./budget.ts";
+import { ResponseCache } from "./cache.ts";
 import type { Config } from "./config.ts";
 import { HealthTracker } from "./health.ts";
 import { ProviderLimiter, type Limiter } from "./limiter.ts";
@@ -67,7 +68,8 @@ export async function buildApp(options: AppOptions) {
   };
   const providers = demo ? allProviders : realProviders;
   const transport = withDemo(options.transport ?? createTransport());
-  const metrics = createMetrics();
+  // With tracing on, latency histograms link to traces through exemplars.
+  const metrics = createMetrics({ exemplars: Boolean(options.tracing) });
 
   // Environment overrides are merged over the defaults each provider declares.
   const limits = Object.fromEntries(
@@ -92,6 +94,7 @@ export async function buildApp(options: AppOptions) {
         )
       : new ProviderLimiter(limits, options.limitWindowMs);
   const health = new HealthTracker();
+  const cache = new ResponseCache(config.CACHE_MAX_ENTRIES);
   const budget = new BudgetTracker(config.PROVIDER_BUDGETS);
   const clients = config.GATEWAY_API_KEYS.map((entry) => ({
     name: entry.name,
@@ -138,6 +141,8 @@ export async function buildApp(options: AppOptions) {
       pricing,
       metrics,
       store,
+      cache,
+      defaultCacheTtlSeconds: config.CACHE_TTL_SECONDS,
       log,
     }),
   };

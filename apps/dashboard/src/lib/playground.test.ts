@@ -129,7 +129,7 @@ describe("result overlap", () => {
     );
     const exa = response("exa", ["http://www.a.com/1/", "https://c.com/3"]);
     const shared = sharedResults([brave, exa]);
-    expect(shared.get("a.com/1")).toEqual(["brave", "exa"]);
+    expect(shared.get("https://a.com/1")).toEqual(["brave", "exa"]);
     expect(summarize(brave, shared)).toEqual({
       results: 2,
       dated: 2,
@@ -172,5 +172,17 @@ describe("hasAdvanced", () => {
     expect(hasAdvanced({ ...form, includeRaw: true })).toBe(true);
     expect(hasAdvanced({ ...form, options: { brave: " " } })).toBe(false);
     expect(hasAdvanced({ ...form, options: { brave: '{"safesearch":"off"}' } })).toBe(true);
+  });
+});
+
+describe("cache in the playground", () => {
+  it("sends a valid cacheTtlSeconds, keeps it in the link and opens the panel for it", () => {
+    const cached = { ...form, cacheTtlSeconds: "60" };
+    expect(buildRequest(cached).body).toMatchObject({ cacheTtlSeconds: 60 });
+    expect(buildRequest({ ...form, cacheTtlSeconds: "1.5" }).body).not.toHaveProperty(
+      "cacheTtlSeconds",
+    );
+    expect(formFromParams(formToParams(cached)).cacheTtlSeconds).toBe("60");
+    expect(hasAdvanced(cached)).toBe(true);
   });
 });

@@ -1,0 +1,65 @@
+name: Provider canary
+
+# Once a night, one real search per provider whose API key is stored as a repository secret, so a
+# provider that changes its API or starts failing is noticed before users do. Each run spends one
+# search per configured provider. Without any key secret the job does nothing.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    if: github.repository == 'Viktor286/toolcallstack-search'
+    runs-on: ubuntu-latest
+    env:
+      BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+      EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+      FASTCRW_API_KEY: ${{ secrets.FASTCRW_API_KEY }}
+      FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+      PARALLEL_API_KEY: ${{ secrets.PARALLEL_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      YOU_API_KEY: ${{ secrets.YOU_API_KEY }}
+      # Only real providers: a canary that passes on demo results proves nothing.
+      DEMO_MODE: "false"
+      BALANCE_POLL_SECONDS: "0"
+    steps:
+      - name: Check for provider keys
+        id: keys
+        run: |
+          if [ -n "$BRAVE_API_KEY$EXA_API_KEY$FASTCRW_API_KEY$FIRECRAWL_API_KEY$PARALLEL_API_KEY$TAVILY_API_KEY$YOU_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No provider key secrets are set; nothing to check."
+          fi
+
+      - if: steps.keys.outputs.present == 'true'
+        uses: actions/checkout@v4
+      - if: steps.keys.outputs.present == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.keys.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - if: steps.keys.outputs.present == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Start the gateway
+        if: steps.keys.outputs.present == 'true'
+        run: |
+          node apps/gateway/src/server.ts > gateway.log 2>&1 &
+          for _ in $(seq 1 30); do curl -sf localhost:4310/health > /dev/null && exit 0; sleep 1; done
+          cat gateway.log; exit 1
+
+      # Fails when a provider errors, returns nothing, or answers in a format the gateway cannot read.
+      - name: One search per provider
+        if: steps.keys.outputs.present == 'true'
+        run: pnpm smoke
+
+      - name: Gateway log
+        if: failure() && steps.keys.outputs.present == 'true'
+        run: cat gateway.log

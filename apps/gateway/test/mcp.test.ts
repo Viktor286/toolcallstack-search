@@ -115,7 +115,7 @@ describe("MCP endpoint", () => {
     });
     expect(recovered.isError).toBeFalsy();
     expect((recovered.content as { text: string }[])[0]!.text).toContain(
-      "Fell back after: you (upstream_error)",
+      "Fell back after: you (auth_error)",
     );
 
     const failed = await client.callTool({
@@ -124,7 +124,7 @@ describe("MCP endpoint", () => {
     });
     expect(failed.isError).toBe(true);
     expect((failed.content as { text: string }[])[0]!.text).toMatch(
-      /^Search with you failed \(upstream_error\)/,
+      /^Search with you failed \(auth_error\)/,
     );
 
     const invalid = await client.callTool({ name: "web_search", arguments: { provider: "you" } });

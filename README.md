@@ -27,15 +27,15 @@ Then open http://localhost:4310/ui/playground. With no provider key the gateway 
 [demo mode](#demo-mode); pass keys with `-e BRAVE_API_KEY=...` (or `--env-file .env`) to search the
 real web.
 
-From source: requires Node 24 and pnpm. Postgres is optional; it enables the call log, balance snapshots,
-`/v1/calls` and `/v1/usage`.
+From source: requires Node 24 and pnpm. Postgres is optional; it enables the call log, balance
+snapshots, `/v1/calls`, `/v1/usage` and `/v1/stats`.
 
 ```sh
 pnpm install
-cp .env.example .env        # add provider keys
-createdb toolcallstack_search          # optional
-pnpm dev                    # gateway on :4310 (API docs at /docs), dashboard on :4311
-pnpm smoke                  # one real query to every configured provider
+cp .env.example .env           # add provider keys
+createdb toolcallstack_search  # optional; then uncomment DATABASE_URL in .env
+pnpm dev                       # gateway on :4310 (API docs at /docs), dashboard on :4311
+pnpm smoke                     # one real query to every configured provider
 ```
 
 ```sh
@@ -92,18 +92,20 @@ Documentation endpoints for AI agents are listed [below](#for-ai-agents).
 Parameters are provider-independent: `query`, `maxResults`, `topic` (`general` or `news`),
 `freshness` (`hour` to `year`), `startDate`, `endDate`, `includeDomains`, `excludeDomains`,
 `country`. A parameter a provider cannot honour is dropped and reported in `warnings`, never
-silently. Anything provider-specific goes in `options`, which is deep-merged into the upstream
-request unchanged.
+silently. Dates must be real calendar dates with `startDate` no later than `endDate`; anything else
+is refused with 400 before a provider is called. Anything provider-specific goes in `options`, which
+is deep-merged into the upstream request unchanged.
 
 Per-call controls:
 
-| Field        | Default | Meaning                                                                     |
-| ------------ | ------- | --------------------------------------------------------------------------- |
-| `timeoutMs`  | 30000   | Timeout for each attempt.                                                   |
-| `maxRetries` | 5       | Retries after a transient failure. `0` makes exactly one upstream request.  |
-| `maxQueueMs` | 30000   | Longest wait for a slot under the provider's rate limit. `0` fails at once. |
-| `fallbacks`  | none    | `/v1/search` only: providers to try in order when the previous one fails.   |
-| `includeRaw` | false   | Return the untouched upstream body.                                         |
+| Field             | Default | Meaning                                                                     |
+| ----------------- | ------- | --------------------------------------------------------------------------- |
+| `timeoutMs`       | 30000   | Timeout for each attempt.                                                   |
+| `maxRetries`      | 5       | Retries after a transient failure. `0` makes exactly one upstream request.  |
+| `maxQueueMs`      | 30000   | Longest wait for a slot under the provider's rate limit. `0` fails at once. |
+| `fallbacks`       | none    | `/v1/search` only: providers to try in order when the previous one fails.   |
+| `includeRaw`      | false   | Return the untouched upstream body.                                         |
+| `cacheTtlSeconds` | 0       | Reuse an identical answer up to this old; see [Cache](#cache).              |
 
 ### Response
 
@@ -117,6 +119,7 @@ Per-call controls:
     {
       "position": 1,
       "url": "…",
+      "canonicalUrl": "…", // the url normalised to match the same page across providers
       "title": "…",
       "snippet": "…",
       "publishedAt": "2026-10-28T18:00:18.000Z", // normalised to UTC, or null
@@ -162,26 +165,34 @@ Per-call controls:
     "credits": 1, // as reported by the provider
     "costUsd": 0.007, // as reported by the provider
     "estimatedCostUsd": 0.005, // from the gateway's price table
-    "costSource": "estimated", // reported | estimated | unknown: which figure to use
+    "costSource": "estimated", // reported | estimated | unknown | cache: which figure to use
   },
   "upstream": { "status": 200, "requestId": "…" },
   "warnings": [],
   "error": null, // { type, message, upstreamStatus } when ok is false
+  "cache": null, // { hit, ageMs, sourceCallId } when the call allowed caching
   "fallback": { "tried": [] }, // providers that failed before this one answered
 }
 ```
 
 `/v1/search` answers with the same body on failure and a matching status:
 
-| Status | `error.type`                                | Meaning                                                |
-| ------ | ------------------------------------------- | ------------------------------------------------------ |
-| 404    | `unknown_provider`                          |                                                        |
-| 503    | `not_configured`                            | The provider's API key is not set.                     |
-| 429    | `rate_limited`                              | The provider answered 429, after retries.              |
-| 429    | `throttled`                                 | No slot within `maxQueueMs`; nothing was sent.         |
-| 429    | `budget_exceeded`                           | The provider's spend cap is used up; nothing was sent. |
-| 504    | `timeout`                                   |                                                        |
-| 502    | `upstream_error`, `network`, `bad_response` |                                                        |
+| Status | `error.type`               | Meaning                                                               |
+| ------ | -------------------------- | --------------------------------------------------------------------- |
+| 404    | `unknown_provider`         |                                                                       |
+| 503    | `not_configured`           | The provider's API key is not set.                                    |
+| 429    | `rate_limited`             | The provider answered 429, after retries.                             |
+| 429    | `throttled`                | No slot within `maxQueueMs`; nothing was sent.                        |
+| 429    | `budget_exceeded`          | The provider's spend cap is used up; nothing was sent.                |
+| 422    | `upstream_invalid_request` | The provider rejected the request (400, 404, 422), often `options`.   |
+| 502    | `auth_error`               | The provider rejected the gateway's key for it (401, 403).            |
+| 502    | `quota_exceeded`           | The provider's account is out of credits or over its plan (402, 432). |
+| 504    | `timeout`                  |                                                                       |
+| 502    | `upstream_error`           | Any other error status from the provider, such as 5xx after retries.  |
+| 502    | `network`, `bad_response`  | No answer, or one that could not be parsed.                           |
+
+A request that fails validation is answered 400 with `{"error": {"type": "invalid_request", "message"}}`
+instead of a search response.
 
 `/v1/search/batch` takes `providers` instead of `provider` and always answers 200 with one entry
 per provider. An entry may be an object to run a labelled variant of the same provider:
@@ -200,8 +211,9 @@ per provider. An entry may be an object to run a labelled variant of the same pr
 ### Retries
 
 Timeouts, network errors, 429 and 5xx responses are retried up to 5 times with exponential backoff
-and jitter (about 0.5 s doubling to 8 s, or the upstream's `Retry-After` if longer, capped at 8 s).
-Other failures are returned at once. Send `"maxRetries": 0` when one call must be exactly one
+and jitter: the first wait is 0.25 to 0.5 s and each step doubles, to at most 8 s; a longer
+`Retry-After` from the provider wins, within the same cap. Other failures, including every other
+4xx, are returned at once. Send `"maxRetries": 0` when one call must be exactly one
 upstream request.
 
 ### Rate limits
@@ -235,7 +247,10 @@ drained by accident:
 - `daily` and `monthly` cap successful calls, dollars (reported cost, else the list-price
   estimate) or reported credits, per UTC day and calendar month.
 - `minRemaining` stops calls once the provider's reported account balance is at or below the
-  value, in the provider's own unit. It needs a provider with a balance endpoint.
+  value, in the provider's own unit. It needs a provider that reports what is left (not Brave,
+  which has no balance endpoint, nor Exa, which reports what was used) and `BALANCE_POLL_SECONDS`
+  above 0; balances are polled for it even without a database. The gateway logs a warning when a
+  floor cannot apply. Between polls the balance can drop below the floor.
 - A capped provider is not called: the call fails as `budget_exceeded` with a message saying which
   cap was hit and when it resets. Fallbacks move on to the next provider.
 - Spend is restored from the call log at start, so a restart does not reset a budget. Without a
@@ -261,6 +276,19 @@ a generated name. The inbound rate limit applies per client.
 Providers are tried in order. Each gets its own retries, limits and call-log entry; the first
 success is returned, with the failures listed in `fallback.tried`. If all fail, the last failure is
 returned. Combine with `"maxQueueMs": 0` to move on at once when a provider is at its limit.
+
+### Cache
+
+Caching is off unless asked for. `"cacheTtlSeconds": 300` on a request (or `CACHE_TTL_SECONDS` as
+the default) reuses a successful answer from the same provider for the same query, parameters and
+`options` if it is at most that old, and keeps the new answer that long. While an identical call is
+still in flight, the second one waits for its answer instead of sending its own request.
+
+A cache hit says so in `cache: { hit: true, ageMs, sourceCallId }`, costs nothing
+(`usage.costSource` is `cache`) and is logged as a call, but it is left out of latency statistics,
+provider health, budgets and the upstream metrics, so measurements only ever describe real requests.
+The cache lives in memory on each instance and holds at most `CACHE_MAX_ENTRIES` answers; an answer
+keeps its raw upstream body only when its call asked for `includeRaw`.
 
 ### Cost
 
@@ -300,22 +328,26 @@ update their counters with a delay, so compare over windows of minutes or more.
 - `GET /health` answers 200 while the process serves requests. Use it for liveness probes; the
   Docker image does.
 - `GET /ready` also checks the database.
-- `GET /v1/status` reports each provider as `healthy`, `degraded`, `down` or `unknown`, from the last
-  20 real calls since the process started (or, with shared state, across all instances): `down` after 3 failures in a row, `degraded` after a
-  failure or below 80% success. It also gives success rate, median latency, the last error and queue
-  depth. `?probe=true` first sends one live one-result search to every configured provider, which
-  spends provider credits.
+- `GET /v1/status` reports each provider as `healthy`, `degraded`, `down` or `unknown`, from the
+  last 20 real calls since the process started (or, with shared state, across all instances): `down`
+  after 3 failures in a row, `degraded` after a failure or below 80% success. Calls refused before
+  sending, calls the provider rejected as invalid and cache hits are not counted. It also gives
+  success rate, median latency, the last error and queue depth. `?probe=true` first sends one live
+  one-result search to every configured provider, which spends provider credits.
 
 ## Dashboard
 
 `apps/dashboard` is a React app (Vite, shadcn/ui, TanStack Query) over the gateway's own API.
 
-| Page       | Shows                                                                                  |
-| ---------- | -------------------------------------------------------------------------------------- |
-| Overview   | Gateway status, a 24-hour summary and, per provider, health, latency, balance, budget. |
-| Calls      | The call log with filters; a call opens to its timing breakdown, attempts and results. |
-| Usage      | Calls over time, typical latency and cost per provider, and the per-key cost check.    |
-| Playground | Run a query against one provider or several at once and compare.                       |
+| Page       | Shows                                                                                                                                                                 |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Overview   | Gateway status, a 24-hour summary and, per provider, health, latency, balance, budget.                                                                                |
+| Calls      | The call log, filtered by provider, outcome or error type, time, query text, label or client; a call opens to its timing, attempts and results, and has its own link. |
+| Usage      | Calls over time, typical latency and cost per provider, and the per-key cost check.                                                                                   |
+| Playground | Run a query against one provider or several at once and compare.                                                                                                      |
+
+Every figure explains itself on hover: what it means, how it is computed and which field it comes
+from. On the Overview, a provider's hourly bars open the calls of that hour.
 
 `pnpm dev` serves it on port 4311 against the local gateway. `pnpm build` writes
 `apps/dashboard/dist`, which the gateway then serves at `/ui`; the Docker image includes it. When
@@ -362,10 +394,11 @@ search, pass it the definition from `/tools.json` and send the tool arguments as
 ## Adding a provider
 
 1. Copy a file in `apps/gateway/src/providers/` (`tavily.ts` is a good template). A provider is two
-   pure functions, `buildRequest` and `parseResponse`, plus the unified parameters it honours and,
+   pure functions, `buildRequest` and `parseResponse`, plus the unified parameters it honours,
    `notes` for callers and, optionally, its default `limits`, `pricing` and `balance` endpoint.
 2. Add it to the array in `apps/gateway/src/providers/index.ts`.
 3. Add its key to `.env` and a case to `apps/gateway/test/providers.test.ts`.
+4. Give it a colour slot in `apps/dashboard/src/lib/providers.ts`.
 
 Transport, timing, retries, limits, cost, metrics and storage are shared and live in
 `apps/gateway/src/search.ts`.
@@ -382,12 +415,21 @@ Transport, timing, retries, limits, cost, metrics and storage are shared and liv
   and download times; retries are events on the search span. The query text is never put on a span.
   The standard `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_SDK_DISABLED` apply. To
   look at traces locally: `docker run -p 16686:16686 -p 4318:4318 jaegertracing/jaeger`.
-- **Metrics** at `/metrics`:
-  - `toolcallstack_search_upstream_calls_total{provider,outcome}`, `toolcallstack_search_upstream_retries_total{provider,reason}`
-  - `toolcallstack_search_upstream_duration_seconds`, `toolcallstack_search_upstream_ttfb_seconds`, `toolcallstack_search_upstream_results`
-  - `toolcallstack_search_queue_wait_seconds`, `toolcallstack_search_queue_depth`
-  - `toolcallstack_search_cost_usd_total{provider,source}`, `toolcallstack_search_balance{provider,unit}`
+- **Metrics** at `/metrics`, all prefixed `toolcallstack_search_`:
+  - `upstream_calls_total{provider,outcome}`, `upstream_retries_total{provider,reason}`
+  - `call_duration_seconds{provider,outcome}` (the whole call), `upstream_duration_seconds` (its
+    final attempt), `upstream_phase_seconds{provider,phase}` for `dns`, `connect`, `tls`, `ttfb` and
+    `download`, and `upstream_ttfb_seconds`
+  - `results_total{provider,dated}`, `upstream_results`, and `parse_anomalies_total{provider,kind}`:
+    successful answers with no readable result (`unreadable`), a sign the provider changed its
+    response format, or results without a URL (`no_url`). Such a call also carries a warning.
+  - `queue_wait_seconds`, `queue_depth`, `cache_lookups_total{provider,result}`
+  - `cost_usd_total{provider,source}`, `budget_spent{provider,period,unit}`, `balance{provider,unit}`
   - `http_request_duration_seconds` per route, and Node.js runtime metrics
+
+  With tracing on, `/metrics` uses the OpenMetrics format and the two duration histograms carry the
+  trace id of a recent call as an exemplar, so a slow bucket links to a trace.
+
 - **Privacy of the call log**: string values under keys that look like credentials (`apiKey`,
   `token`, `secret`, `password`, `authorization`) in a caller's `options` are stored as
   `[redacted]`; the provider still receives the real value. Provider API keys are never stored.
@@ -404,39 +446,44 @@ behind a load balancer, set `SHARED_STATE=true` on all of them, with the same `D
 
 - **Outbound rate limits** are counted in Postgres, so `rpm` and `concurrency` hold for all
   instances together. A waiting call polls for a slot, so order between instances is not strictly
-  first-come, and each upstream request costs one extra database round trip.
+  first-come, and each upstream request costs one extra database round trip. While Postgres cannot
+  be reached, calls fall back to each instance's own in-memory limits instead of failing, and a
+  warning is logged.
 - **Budgets and provider health** are reloaded from the shared call log every
   `SHARED_STATE_SYNC_SECONDS`. A budget can therefore be overshot by what the other instances send
   within that interval.
-- **Inbound limits** (`INBOUND_RATE_LIMIT_RPM`) and the queue-depth metric stay per instance.
+- **Inbound limits** (`INBOUND_RATE_LIMIT_RPM`), the [cache](#cache) and the queue-depth metric
+  stay per instance.
 
 The MCP endpoint is stateless and the call log is shared already, so nothing else needs care.
 
 ## Configuration
 
-| Variable                        | Default           | Meaning                                                                      |
-| ------------------------------- | ----------------- | ---------------------------------------------------------------------------- |
-| `PORT`, `HOST`                  | `4310`, `0.0.0.0` |                                                                              |
-| `GATEWAY_API_KEYS`              | empty             | Comma-separated bearer tokens, optionally `name:token`. Empty disables auth. |
-| `DATABASE_URL`                  | unset             | Postgres. Migrations run at start.                                           |
-| `STORE_RAW`                     | `false`           | Store raw upstream bodies in the call log.                                   |
-| `DEMO_MODE`                     | `auto`            | Built-in demo providers: `auto` (only without real keys), `true`, `false`.   |
-| `SHARED_STATE`                  | `false`           | Share limits, budgets and health between instances. Needs `DATABASE_URL`.    |
-| `SHARED_STATE_SYNC_SECONDS`     | `10`              | How often budgets and health are reloaded from the call log.                 |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`   | unset             | OTLP/HTTP endpoint for traces. Unset turns tracing off.                      |
-| `DEFAULT_TIMEOUT_MS`            | `30000`           | Per-attempt timeout when the request sets none.                              |
-| `MAX_RETRIES`                   | `5`               | Retries per call when the request sets none.                                 |
-| `RETRY_BASE_MS`, `RETRY_MAX_MS` | `500`, `8000`     | First backoff step and the cap on any single wait.                           |
-| `PROVIDER_LIMITS`               | `{}`              | JSON by provider id: `{"tavily":{"rpm":100,"concurrency":10}}`.              |
-| `MAX_QUEUE_MS`                  | `30000`           | Queue wait limit when the request sets none.                                 |
-| `PROVIDER_PRICING`              | `{}`              | JSON by provider id: `{"brave":{"perRequestUsd":0.005}}`.                    |
-| `PROVIDER_BUDGETS`              | `{}`              | JSON by provider id: spend caps, see [Budgets](#budgets).                    |
-| `CALL_LOG_RETENTION_DAYS`       | `0`               | Delete logged calls and balance snapshots older than this. `0` keeps them.   |
-| `RAW_RETENTION_DAYS`            | `0`               | Drop stored raw upstream bodies older than this. `0` keeps them.             |
-| `BALANCE_POLL_SECONDS`          | `300`             | Balance snapshot interval. `0` disables. Needs `DATABASE_URL`.               |
-| `INBOUND_RATE_LIMIT_RPM`        | `0`               | Requests per minute per gateway API key. `0` disables.                       |
-| `MAX_EVENT_LOOP_DELAY_MS`       | `1000`            | Load-shedding threshold. `0` disables.                                       |
-| `LOG_LEVEL`                     | `info`            |                                                                              |
+| Variable                        | Default           | Meaning                                                                       |
+| ------------------------------- | ----------------- | ----------------------------------------------------------------------------- |
+| `PORT`, `HOST`                  | `4310`, `0.0.0.0` |                                                                               |
+| `GATEWAY_API_KEYS`              | empty             | Comma-separated bearer tokens, optionally `name:token`. Empty disables auth.  |
+| `DATABASE_URL`                  | unset             | Postgres. Migrations run at start.                                            |
+| `STORE_RAW`                     | `false`           | Store raw upstream bodies in the call log.                                    |
+| `DEMO_MODE`                     | `auto`            | Built-in demo providers: `auto` (only without real keys), `true`, `false`.    |
+| `SHARED_STATE`                  | `false`           | Share limits, budgets and health between instances. Needs `DATABASE_URL`.     |
+| `SHARED_STATE_SYNC_SECONDS`     | `10`              | How often budgets and health are reloaded from the call log.                  |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`   | unset             | OTLP/HTTP endpoint for traces. Unset turns tracing off.                       |
+| `DEFAULT_TIMEOUT_MS`            | `30000`           | Per-attempt timeout when the request sets none.                               |
+| `MAX_RETRIES`                   | `5`               | Retries per call when the request sets none.                                  |
+| `RETRY_BASE_MS`, `RETRY_MAX_MS` | `500`, `8000`     | First backoff step and the cap on any single wait.                            |
+| `PROVIDER_LIMITS`               | `{}`              | JSON by provider id: `{"tavily":{"rpm":100,"concurrency":10}}`.               |
+| `MAX_QUEUE_MS`                  | `30000`           | Queue wait limit when the request sets none.                                  |
+| `PROVIDER_PRICING`              | `{}`              | JSON by provider id: `{"brave":{"perRequestUsd":0.005}}`.                     |
+| `PROVIDER_BUDGETS`              | `{}`              | JSON by provider id: spend caps, see [Budgets](#budgets).                     |
+| `CALL_LOG_RETENTION_DAYS`       | `0`               | Delete logged calls and balance snapshots older than this. `0` keeps them.    |
+| `RAW_RETENTION_DAYS`            | `0`               | Drop stored raw upstream bodies older than this. `0` keeps them.              |
+| `BALANCE_POLL_SECONDS`          | `300`             | Balance polling interval. `0` disables. Snapshots need `DATABASE_URL`.        |
+| `CACHE_TTL_SECONDS`             | `0`               | Default `cacheTtlSeconds` for requests that set none. `0` leaves caching off. |
+| `CACHE_MAX_ENTRIES`             | `1000`            | Most answers the in-memory cache keeps per instance.                          |
+| `INBOUND_RATE_LIMIT_RPM`        | `0`               | Requests per minute per gateway API key. `0` disables.                        |
+| `MAX_EVENT_LOOP_DELAY_MS`       | `1000`            | Load-shedding threshold. `0` disables.                                        |
+| `LOG_LEVEL`                     | `info`            |                                                                               |
 
 Provider keys and their variable names are listed in [.env.example](.env.example).
 
