@@ -36,7 +36,9 @@ describe.skipIf(!databaseUrl)("state shared between instances", () => {
     await migrate(first.sql);
   });
   beforeEach(async () => {
-    await first.sql`TRUNCATE gateway.limiter_slots, gateway.search_calls`;
+    await first.sql`
+      TRUNCATE gateway.limiter_slots, gateway.search_calls, gateway.call_counts_hourly,
+        gateway.call_latency_hourly`;
   });
   afterAll(async () => {
     await first?.close();

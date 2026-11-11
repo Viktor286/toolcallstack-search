@@ -397,8 +397,13 @@ export const statsResponseSchema = z.object({
       p50LatencyMs: z
         .number()
         .nullable()
-        .describe("Median latency of successful calls, cache hits excluded"),
-      p95LatencyMs: z.number().nullable(),
+        .describe(
+          "Median latency of successful calls, cache hits excluded; estimated from latency buckets, within 2.5%",
+        ),
+      p95LatencyMs: z
+        .number()
+        .nullable()
+        .describe("95th percentile, estimated the same way as p50LatencyMs"),
       avgQueuedMs: z.number().nullable(),
       costUsd: z.number().nullable().describe("Reported cost where known, else the estimate"),
     }),

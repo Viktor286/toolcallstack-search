@@ -19,6 +19,9 @@ export interface MetricDoc {
 
 const healthBasis = `Taken from the provider's last ${HEALTH_WINDOW} calls. With a database these are reloaded from the call log when the gateway starts (with \`SHARED_STATE\`, every \`SHARED_STATE_SYNC_SECONDS\`); without one they are the calls since start. Calls that say nothing about the provider are not counted: refused before anything was sent (\`throttled\`, \`budget_exceeded\`, \`not_configured\`), rejected for the caller's own request (\`upstream_invalid_request\`), or answered from the cache.`;
 
+const latencyEstimate =
+  "Every successful call adds one to an hourly count for its latency bucket (each bucket 5% wider than the last), so percentiles are read from those counts the way `percentile_cont` reads values: within 2.5% of the exact figure, without scanning the call log.";
+
 const day24 =
   "The last 24 hourly buckets in UTC, ending with the current, unfinished hour: between 23 and 24 hours of history.";
 
@@ -58,7 +61,8 @@ export const METRIC_DOCS = {
     meaning:
       "How slow the slowest 5% of successful calls got, in the provider's worst hour of the last day. A tail-latency alarm, not an average.",
     logic: [
-      "Per hour, Postgres computes `percentile_cont(0.95)` over `latency_ms` of the hour's successful calls (interpolated, final attempt only, cache hits left out).",
+      "Per hour, the 95th percentile of `latency_ms` over the hour's successful calls (final attempt only, cache hits left out).",
+      latencyEstimate,
       "The card shows the highest of those hourly values, not a p95 over all 24 hours at once.",
       day24,
       "Needs the call log (`DATABASE_URL`).",
@@ -187,7 +191,8 @@ export const METRIC_DOCS = {
     title: "Typical latency",
     meaning: "A typical successful call's duration per provider, with its worst tail.",
     logic: [
-      "Postgres takes the median (`percentile_cont(0.5)`) of `latency_ms` of successful calls per bucket, leaving out cache hits, which took no upstream time.",
+      "The median of `latency_ms` over successful calls per bucket, leaving out cache hits, which took no upstream time.",
+      latencyEstimate,
       "The bar is the mean of those bucket medians, weighted by each bucket's successful calls: close to the overall median, but an approximation.",
       "p95 is the highest bucket p95 in the period, as on the Overview.",
       "Latency is the final attempt alone, without queueing or retries.",

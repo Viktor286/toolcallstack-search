@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { SearchResponse } from "../src/schema.ts";
 import { callsQuerySchema, searchParamsSchema } from "../src/schema.ts";
-import { createPostgresStore, migrate } from "../src/store.ts";
+import { createPostgresStore, histogramPercentile, migrate, wholeHours } from "../src/store.ts";
 
 // Needs a disposable Postgres database: TEST_DATABASE_URL=postgres://localhost/toolcallstack_search_test
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -61,6 +61,38 @@ function call(overrides: {
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 
+describe("rollup arithmetic", () => {
+  it("reads percentiles back from latency buckets within 2.5%", () => {
+    // Bucket i holds (1.05^(i-1), 1.05^i] ms: 10 ms is in bucket 48, 1000 ms in bucket 142.
+    expect(histogramPercentile([], 0.5)).toBeNull();
+    expect(histogramPercentile([[48, 3]], 0.5)! / 10).toBeCloseTo(1, 1);
+    const mixed: [number, number][] = [
+      [142, 1],
+      [48, 9],
+    ];
+    expect(histogramPercentile(mixed, 0.5)! / 10).toBeCloseTo(1, 1);
+    // Nine at 10 ms and one at 1 s: percentile_cont gives 10 + 0.55 × 990 = 554.5 ms.
+    expect(histogramPercentile(mixed, 0.95)! / 554.5).toBeCloseTo(1, 1);
+    expect(histogramPercentile([[0, 1]], 0.5)).toBe(1);
+  });
+
+  it("answers whole hours from rollups and reads only part-hours from the log", () => {
+    const now = Date.parse("2026-11-10T12:30:00Z");
+    // A window ending now: the current hour's rollup is complete up to now.
+    expect(
+      wholeHours(new Date("2026-11-09T12:30:00Z"), new Date("2026-11-10T12:30:00Z"), now),
+    ).toEqual({ start: new Date("2026-11-09T13:00:00Z"), end: new Date("2026-11-10T13:00:00Z") });
+    // A window in the past ends mid-hour: that hour comes from the log.
+    expect(
+      wholeHours(new Date("2026-11-09T10:00:00Z"), new Date("2026-11-09T12:15:00Z"), now),
+    ).toEqual({ start: new Date("2026-11-09T10:00:00Z"), end: new Date("2026-11-09T12:00:00Z") });
+    // Inside one hour there is nothing whole.
+    expect(
+      wholeHours(new Date("2026-11-09T10:10:00Z"), new Date("2026-11-09T10:50:00Z"), now),
+    ).toBeNull();
+  });
+});
+
 describe.skipIf(!databaseUrl)("postgres store", () => {
   let store: ReturnType<typeof createPostgresStore>;
   const params = searchParamsSchema.parse({ query: "q" });
@@ -84,12 +116,14 @@ describe.skipIf(!databaseUrl)("postgres store", () => {
   beforeAll(async () => {
     store = createPostgresStore(databaseUrl!, { storeRaw: true });
     await store.sql`DROP SCHEMA IF EXISTS gateway CASCADE`;
-    expect(await migrate(store.sql)).toHaveLength(6);
+    expect(await migrate(store.sql)).toHaveLength(7);
     expect(await migrate(store.sql)).toEqual([]);
   });
   afterAll(() => store.close());
   beforeEach(async () => {
-    await store.sql`TRUNCATE gateway.search_calls, gateway.balance_snapshots`;
+    await store.sql`
+      TRUNCATE gateway.search_calls, gateway.search_call_raws, gateway.balance_snapshots,
+        gateway.call_counts_hourly, gateway.call_latency_hourly`;
   });
 
   it("round-trips calls, filters them and pages newest first", async () => {
@@ -318,7 +352,12 @@ describe.skipIf(!databaseUrl)("postgres store", () => {
       ["2026-11-09T11:00:00.000Z", "tavily", 1, 0, 0],
       ["2026-11-09T23:00:00.000Z", "exa", 1, 0, 0],
     ]);
-    expect(hourly[0]).toMatchObject({ p50LatencyMs: 10, p95LatencyMs: 10, avgQueuedMs: 0 });
+    // Percentiles come from latency buckets, within 2.5% of the exact 10 ms.
+    expect(hourly[0]).toMatchObject({
+      p50LatencyMs: expect.closeTo(10, 0),
+      p95LatencyMs: expect.closeTo(10, 0),
+      avgQueuedMs: 0,
+    });
     // Reported cost wins over the estimate for the same call.
     expect(hourly[0]?.costUsd).toBeCloseTo(0.018);
     expect(hourly[1]?.costUsd).toBeNull();
@@ -345,7 +384,12 @@ describe.skipIf(!databaseUrl)("postgres store", () => {
       new Date("2026-11-10T00:00:00Z"),
       "hour",
     );
-    expect(point).toMatchObject({ calls: 2, cacheHits: 1, p50LatencyMs: 10, p95LatencyMs: 10 });
+    expect(point).toMatchObject({
+      calls: 2,
+      cacheHits: 1,
+      p50LatencyMs: expect.closeTo(10, 0),
+      p95LatencyMs: expect.closeTo(10, 0),
+    });
     const [spend] = await store.spendSince(
       new Date("2026-11-09T00:00:00Z"),
       new Date("2026-11-01T00:00:00Z"),
@@ -425,5 +469,156 @@ describe.skipIf(!databaseUrl)("postgres store", () => {
     expect((await store.sql`SELECT count(*)::int AS n FROM gateway.balance_snapshots`)[0]?.n).toBe(
       1,
     );
+  });
+
+  it("gives the same totals from rollups as from the log, including part-hours", async () => {
+    const times = [
+      "2026-11-09T09:40:00.000Z",
+      "2026-11-09T10:05:00.000Z",
+      "2026-11-09T10:20:00.000Z",
+      "2026-11-09T11:59:00.000Z",
+      "2026-11-09T12:10:00.000Z",
+    ];
+    for (const [index, sentAt] of times.entries()) {
+      await save(call({ provider: "tavily", sentAt, credits: 1, estimatedCostUsd: 0.008 }), {
+        key: index % 2 === 0 ? "aaaaaaaa" : "bbbbbbbb",
+        client: index < 2 ? "ci" : undefined,
+      });
+    }
+    await save(call({ provider: "tavily", sentAt: "2026-11-09T10:30:00.000Z", ok: false }));
+
+    // 09:50–12:05 covers a part-hour at each end, so both are read from the log.
+    const from = new Date("2026-11-09T09:50:00Z");
+    const to = new Date("2026-11-09T12:05:00Z");
+    const exact = await store.sql<{ calls: number; credits: number }[]>`
+      SELECT count(*)::int AS calls, sum(credits)::float8 AS credits
+      FROM gateway.search_calls WHERE sent_at >= ${from} AND sent_at < ${to}`;
+    const usage = await store.usage(from, to);
+    expect(usage.reduce((sum, row) => sum + row.calls, 0)).toBe(exact[0]?.calls);
+    expect(usage.reduce((sum, row) => sum + (row.credits ?? 0), 0)).toBe(exact[0]?.credits);
+    expect(usage.map((row) => [row.keyFingerprint, row.calls, row.okCalls])).toEqual([
+      ["aaaaaaaa", 2, 1],
+      ["bbbbbbbb", 2, 2],
+    ]);
+    const clients = await store.usageByClient(from, to);
+    expect(clients.map((row) => [row.client, row.calls])).toEqual([
+      ["ci", 1],
+      [null, 3],
+    ]);
+    const points = await store.stats(from, to, "hour");
+    expect(points.map((p) => [p.bucket, p.calls, p.failures])).toEqual([
+      ["2026-11-09T10:00:00.000Z", 3, 1],
+      ["2026-11-09T11:00:00.000Z", 1, 0],
+    ]);
+  });
+
+  it("creates a month's partition for its first call", async () => {
+    const old = call({ provider: "tavily", sentAt: "2019-03-15T10:00:00.000Z" });
+    await save(old);
+    expect((await store.getCall(old.id))?.id).toBe(old.id);
+    const [partition] = await store.sql`SELECT to_regclass('gateway.search_calls_2019_03') AS id`;
+    expect(partition?.id).not.toBeNull();
+    await store.sql`DROP TABLE gateway.search_calls_2019_03`;
+  });
+
+  it("drops whole months for retention and keeps their rollups", async () => {
+    const sentAt = "2019-05-10T10:00:00.000Z";
+    await save(call({ provider: "tavily", sentAt, estimatedCostUsd: 0.008 }), { raw: { x: 1 } });
+    const window = [new Date("2019-05-10T00:00:00Z"), new Date("2019-05-11T00:00:00Z")] as const;
+
+    expect(await store.cleanup({ callDays: 30, rawDays: 0 })).toEqual({ calls: 1, raws: 0 });
+    const [partition] = await store.sql`SELECT to_regclass('gateway.search_calls_2019_05') AS id`;
+    expect(partition?.id).toBeNull();
+    expect((await store.sql`SELECT count(*)::int AS n FROM gateway.search_call_raws`)[0]?.n).toBe(
+      0,
+    );
+    // Usage and stats still know the month after its calls are gone.
+    expect((await store.usage(...window))[0]).toMatchObject({ calls: 1, estimatedCostUsd: 0.008 });
+    expect((await store.stats(...window, "day"))[0]).toMatchObject({
+      calls: 1,
+      p50LatencyMs: expect.closeTo(10, 0),
+    });
+  });
+});
+
+describe.skipIf(!databaseUrl)("upgrading the call log to partitions and rollups", () => {
+  let store: ReturnType<typeof createPostgresStore>;
+  beforeAll(() => {
+    store = createPostgresStore(databaseUrl!, { storeRaw: true });
+  });
+  afterAll(() => store.close());
+
+  it("moves calls into monthly partitions, raw bodies into their table and fills the rollups", async () => {
+    await store.sql`DROP SCHEMA IF EXISTS gateway CASCADE`;
+    await migrate(store.sql, { until: "006_cache_hits.sql" });
+    const row = (id: string, sentAt: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      provider: "tavily",
+      label: "tavily",
+      query: "q",
+      params: store.sql.json({}),
+      sent_at: sentAt,
+      received_at: sentAt,
+      latency_ms: 200,
+      ok: true,
+      result_count: 0,
+      results: store.sql.json([]),
+      usage: store.sql.json({}),
+      warnings: store.sql.json([]),
+      attempts: store.sql.json([{}]),
+      key_fingerprint: "aaaaaaaa",
+      estimated_cost_usd: 0.008,
+      cache_hit: false,
+      raw: null,
+      response: null,
+      ...extra,
+    });
+    const first = crypto.randomUUID();
+    await store.sql`INSERT INTO gateway.search_calls ${store.sql([
+      row(first, "2026-09-30T23:30:00Z", {
+        raw: store.sql.json({ body: 1 }),
+        response: store.sql.json({
+          ...call({ provider: "tavily", sentAt: "2026-09-30T23:30:00Z" }),
+          id: first,
+        } as unknown as Parameters<typeof store.sql.json>[0]),
+      }),
+      row(crypto.randomUUID(), "2026-10-01T00:30:00Z", { ok: false, estimated_cost_usd: null }),
+      row(crypto.randomUUID(), "2026-10-01T00:40:00Z", {
+        cache_hit: true,
+        estimated_cost_usd: null,
+      }),
+    ])}`;
+
+    expect(await migrate(store.sql)).toEqual(["007_partitions_and_rollups.sql"]);
+
+    const partitions = await store.sql<{ name: string; n: number }[]>`
+      SELECT tableoid::regclass::text AS name, count(*)::int AS n
+      FROM gateway.search_calls GROUP BY 1 ORDER BY 1`;
+    expect(partitions).toEqual([
+      { name: "gateway.search_calls_2026_09", n: 1 },
+      { name: "gateway.search_calls_2026_10", n: 2 },
+    ]);
+    expect((await store.getCall(first))?.raw).toEqual({ body: 1 });
+    const usage = await store.usage(
+      new Date("2026-09-30T00:00:00Z"),
+      new Date("2026-10-02T00:00:00Z"),
+    );
+    expect(usage[0]).toMatchObject({ calls: 3, okCalls: 2, estimatedCostUsd: 0.008 });
+    const [spend] = await store.spendSince(
+      new Date("2026-10-01T00:00:00Z"),
+      new Date("2026-10-01T00:00:00Z"),
+    );
+    // The October failure and cache hit are not billed, so October has no spend.
+    expect(spend).toBeUndefined();
+    const stats = await store.stats(
+      new Date("2026-09-30T00:00:00Z"),
+      new Date("2026-10-02T00:00:00Z"),
+      "day",
+    );
+    expect(stats.map((p) => [p.bucket, p.calls, p.cacheHits])).toEqual([
+      ["2026-09-30T00:00:00.000Z", 1, 0],
+      ["2026-10-01T00:00:00.000Z", 2, 1],
+    ]);
+    expect(stats[0]?.p50LatencyMs).toEqual(expect.closeTo(200, -1));
   });
 });

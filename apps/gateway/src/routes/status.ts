@@ -13,7 +13,7 @@ export const statusRoutes: FastifyPluginAsyncZod = async (app) => {
       schema: {
         summary: "Health of the gateway and of each provider",
         description:
-          "Provider health is derived from real traffic since the process started. With `probe=true` the gateway first sends one live one-result search to every configured provider, which spends provider credits.",
+          "Provider health is derived from real traffic: with a database, from the last calls in the call log, which are reloaded at start; without one, since the process started. With `probe=true` the gateway first sends one live one-result search to every configured provider, which spends provider credits.",
         querystring: z.object({ probe: z.enum(["true", "false"]).default("false") }),
         response: { 200: statusResponseSchema },
       },

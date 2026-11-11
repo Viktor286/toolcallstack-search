@@ -68,14 +68,23 @@ export interface Store {
 
 const MIGRATIONS_DIR = new URL("../migrations/", import.meta.url);
 
-export async function migrate(sql: postgres.Sql): Promise<string[]> {
+/**
+ * Apply pending migrations, then make sure this month and the next have a call log partition.
+ * `until` stops after the named migration, so tests can start from an older schema.
+ */
+export async function migrate(
+  sql: postgres.Sql,
+  options: { until?: string } = {},
+): Promise<string[]> {
   await sql`CREATE SCHEMA IF NOT EXISTS gateway`;
   await sql`
     CREATE TABLE IF NOT EXISTS gateway.migrations (
       name text PRIMARY KEY,
       applied_at timestamptz NOT NULL DEFAULT now()
     )`;
-  const files = (await readdir(MIGRATIONS_DIR)).filter((file) => file.endsWith(".sql")).toSorted();
+  const files = (await readdir(MIGRATIONS_DIR))
+    .filter((file) => file.endsWith(".sql") && (!options.until || file <= options.until))
+    .toSorted();
   const applied: string[] = [];
   for (const file of files) {
     await sql.begin(async (tx) => {
@@ -88,7 +97,67 @@ export async function migrate(sql: postgres.Sql): Promise<string[]> {
       applied.push(file);
     });
   }
+  const [partitioned] = await sql`
+    SELECT to_regprocedure('gateway.create_call_partition(timestamptz)') IS NOT NULL AS ready`;
+  if (partitioned?.ready) await createPartitions(sql, [new Date(), nextMonth(new Date())]);
   return applied;
+}
+
+const nextMonth = (at: Date) => new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 1));
+
+async function createPartitions(sql: postgres.Sql, months: Date[]): Promise<void> {
+  for (const month of months) await sql`SELECT gateway.create_call_partition(${month})`;
+}
+
+/** Postgres refuses a row whose month has no partition with this code. */
+const NO_PARTITION = "23514";
+
+const HOUR_MS = 3_600_000;
+
+/** Bucket i holds latencies in (RATIO^(i-1), RATIO^i] ms; see gateway.latency_bucket. */
+const LATENCY_RATIO = 1.05;
+
+/**
+ * A percentile from per-bucket counts, by the same rule as `percentile_cont`: the value at rank
+ * q·(n−1), interpolated between the two neighbouring ranks. Each rank's value is read as the
+ * geometric middle of its bucket, so the result is within 2.5% of the exact percentile.
+ */
+export function histogramPercentile(
+  buckets: [bucket: number, count: number][],
+  q: number,
+): number | null {
+  const sorted = buckets.filter(([, count]) => count > 0).toSorted(([a], [b]) => a - b);
+  const total = sorted.reduce((sum, [, count]) => sum + count, 0);
+  if (total === 0) return null;
+  const valueAt = (rank: number) => {
+    let seen = 0;
+    for (const [bucket, count] of sorted) {
+      seen += count;
+      if (seen > rank) return bucket === 0 ? 1 : LATENCY_RATIO ** (bucket - 0.5);
+    }
+    return LATENCY_RATIO ** (sorted.at(-1)![0] - 0.5);
+  };
+  const rank = q * (total - 1);
+  const below = valueAt(Math.floor(rank));
+  return below + (rank - Math.floor(rank)) * (valueAt(Math.ceil(rank)) - below);
+}
+
+/**
+ * The whole hours of [from, to), which the hourly rollups answer; a part-hour at either end is
+ * read from the call log. The rollup for the current hour is complete up to now, so a window
+ * that ends now needs no part-hour at its end.
+ */
+export function wholeHours(
+  from: Date,
+  to: Date,
+  now = Date.now(),
+): { start: Date; end: Date } | null {
+  const start = Math.ceil(from.getTime() / HOUR_MS) * HOUR_MS;
+  const end =
+    to.getTime() >= now
+      ? Math.ceil(to.getTime() / HOUR_MS) * HOUR_MS
+      : Math.floor(to.getTime() / HOUR_MS) * HOUR_MS;
+  return start < end ? { start: new Date(start), end: new Date(end) } : null;
 }
 
 /**
@@ -164,6 +233,45 @@ export function createPostgresStore(
   sql: postgres.Sql;
 } {
   const sql = postgres(databaseUrl, { max: 10, onnotice: () => {} });
+  /** Adds two rollup sums that stay null while neither side has a value; `column` is a literal. */
+  const addNullable = (column: string) =>
+    sql.unsafe(
+      `CASE WHEN t.${column} IS NULL AND excluded.${column} IS NULL THEN NULL
+        ELSE coalesce(t.${column}, 0) + coalesce(excluded.${column}, 0) END`,
+    );
+  /**
+   * Rollup rows for [from, to): whole hours from the rollup table, part-hours aggregated from the
+   * call log through the same `call_facts` view the rollups are built from.
+   */
+  const countFacts = (from: Date, to: Date) => {
+    const whole = wholeHours(from, to);
+    return sql`
+      SELECT hour, provider, key_fingerprint, client, calls, ok_calls, retries, cache_hits,
+        upstream_requests, credits, reported_cost_usd, estimated_cost_usd, cost_usd,
+        queued_ms_sum, queued_calls, billed_calls, billed_usd, billed_credits
+      FROM gateway.call_counts_hourly
+      WHERE ${whole ? sql`hour >= ${whole.start} AND hour < ${whole.end}` : sql`false`}
+      UNION ALL
+      SELECT hour, provider, key_fingerprint, client, sum(calls), sum(ok_calls), sum(retries),
+        sum(cache_hits), sum(upstream_requests), sum(credits), sum(reported_cost_usd),
+        sum(estimated_cost_usd), sum(cost_usd), sum(queued_ms_sum), sum(queued_calls),
+        sum(billed_calls), sum(billed_usd), sum(billed_credits)
+      FROM gateway.call_facts
+      WHERE sent_at >= ${from} AND sent_at < ${to}
+        ${whole ? sql`AND NOT (sent_at >= ${whole.start} AND sent_at < ${whole.end})` : sql``}
+      GROUP BY hour, provider, key_fingerprint, client`;
+  };
+  const latencyFacts = (from: Date, to: Date) => {
+    const whole = wholeHours(from, to);
+    return sql`
+      SELECT hour, provider, bucket, calls FROM gateway.call_latency_hourly
+      WHERE ${whole ? sql`hour >= ${whole.start} AND hour < ${whole.end}` : sql`false`}
+      UNION ALL
+      SELECT hour, provider, latency_bucket, count(*)::int FROM gateway.call_facts
+      WHERE latency_bucket IS NOT NULL AND sent_at >= ${from} AND sent_at < ${to}
+        ${whole ? sql`AND NOT (sent_at >= ${whole.start} AND sent_at < ${whole.end})` : sql``}
+      GROUP BY hour, provider, latency_bucket`;
+  };
   return {
     sql,
     async saveCall({ response, params, batchId, groupId, keyFingerprint, client, raw }) {
@@ -199,9 +307,52 @@ export function createPostgresStore(
         estimated_cost_usd: response.usage.estimatedCostUsd ?? null,
         warnings: sql.json(response.warnings),
         response: sql.json(response as unknown as postgres.JSONValue),
-        raw: options.storeRaw && raw !== undefined ? sql.json(raw as postgres.JSONValue) : null,
       };
-      await sql`INSERT INTO gateway.search_calls ${sql(row)}`;
+      const write = () =>
+        sql.begin(async (tx) => {
+          await tx`INSERT INTO gateway.search_calls ${tx(row)}`;
+          if (options.storeRaw && raw !== undefined) {
+            await tx`
+              INSERT INTO gateway.search_call_raws (call_id, sent_at, raw)
+              VALUES (${row.id}, ${row.sent_at}, ${tx.json(raw as postgres.JSONValue)})`;
+          }
+          // The rollups take what this call adds, by the same definition the backfill used.
+          const fact = tx`
+            FROM gateway.call_facts WHERE id = ${row.id} AND sent_at = ${row.sent_at}`;
+          await tx`
+            INSERT INTO gateway.call_counts_hourly AS t
+            SELECT hour, provider, key_fingerprint, client, calls, ok_calls, retries, cache_hits,
+              upstream_requests, credits, reported_cost_usd, estimated_cost_usd, cost_usd,
+              queued_ms_sum, queued_calls, billed_calls, billed_usd, billed_credits
+            ${fact}
+            ON CONFLICT ON CONSTRAINT call_counts_hourly_key DO UPDATE SET
+              calls = t.calls + excluded.calls,
+              ok_calls = t.ok_calls + excluded.ok_calls,
+              retries = t.retries + excluded.retries,
+              cache_hits = t.cache_hits + excluded.cache_hits,
+              upstream_requests = t.upstream_requests + excluded.upstream_requests,
+              credits = ${addNullable("credits")},
+              reported_cost_usd = ${addNullable("reported_cost_usd")},
+              estimated_cost_usd = ${addNullable("estimated_cost_usd")},
+              cost_usd = ${addNullable("cost_usd")},
+              queued_ms_sum = t.queued_ms_sum + excluded.queued_ms_sum,
+              queued_calls = t.queued_calls + excluded.queued_calls,
+              billed_calls = t.billed_calls + excluded.billed_calls,
+              billed_usd = t.billed_usd + excluded.billed_usd,
+              billed_credits = t.billed_credits + excluded.billed_credits`;
+          await tx`
+            INSERT INTO gateway.call_latency_hourly AS t
+            SELECT hour, provider, latency_bucket, 1 ${fact} AND latency_bucket IS NOT NULL
+            ON CONFLICT (hour, provider, bucket) DO UPDATE SET calls = t.calls + 1`;
+        });
+      try {
+        await write();
+      } catch (error) {
+        // The first call of a month nobody prepared a partition for: create it and try again.
+        if ((error as { code?: string }).code !== NO_PARTITION) throw error;
+        await createPartitions(sql, [new Date(row.sent_at)]);
+        await write();
+      }
     },
 
     async listCalls(query) {
@@ -234,7 +385,10 @@ export function createPostgresStore(
 
     async getCall(id) {
       const [row] = await sql<{ response: SearchResponse; raw: unknown }[]>`
-        SELECT response, raw FROM gateway.search_calls WHERE id = ${id} AND response IS NOT NULL`;
+        SELECT c.response, r.raw
+        FROM gateway.search_calls c
+        LEFT JOIN gateway.search_call_raws r ON r.call_id = c.id
+        WHERE c.id = ${id} AND c.response IS NOT NULL`;
       if (!row) return null;
       const response = current(row.response);
       return row.raw === null ? response : { ...response, raw: row.raw };
@@ -266,14 +420,14 @@ export function createPostgresStore(
         }[]
       >`
         SELECT provider, key_fingerprint,
-          count(*)::int AS calls,
-          count(*) FILTER (WHERE ok)::int AS ok_calls,
-          coalesce(sum(jsonb_array_length(attempts)), 0)::int AS upstream_requests,
+          sum(calls)::int AS calls,
+          sum(ok_calls)::int AS ok_calls,
+          sum(upstream_requests)::int AS upstream_requests,
           sum(credits)::float8 AS credits,
           sum(reported_cost_usd)::float8 AS reported_cost_usd,
           sum(estimated_cost_usd)::float8 AS estimated_cost_usd
-        FROM gateway.search_calls
-        WHERE sent_at >= ${from} AND sent_at < ${to} AND key_fingerprint IS NOT NULL
+        FROM (${countFacts(from, to)}) facts
+        WHERE key_fingerprint IS NOT NULL
         GROUP BY provider, key_fingerprint`;
       // Per key: its newest snapshot overall, and the first and last inside the window.
       const snapshots = await sql<(BalanceRow & { kind: "latest" | "first" | "last" })[]>`
@@ -344,14 +498,13 @@ export function createPostgresStore(
         }[]
       >`
         SELECT client, provider,
-          count(*)::int AS calls,
-          count(*) FILTER (WHERE ok)::int AS ok_calls,
-          coalesce(sum(jsonb_array_length(attempts)), 0)::int AS upstream_requests,
+          sum(calls)::int AS calls,
+          sum(ok_calls)::int AS ok_calls,
+          sum(upstream_requests)::int AS upstream_requests,
           sum(credits)::float8 AS credits,
           sum(reported_cost_usd)::float8 AS reported_cost_usd,
           sum(estimated_cost_usd)::float8 AS estimated_cost_usd
-        FROM gateway.search_calls
-        WHERE sent_at >= ${from} AND sent_at < ${to}
+        FROM (${countFacts(from, to)}) facts
         GROUP BY client, provider
         ORDER BY client NULLS LAST, provider`;
       return rows.map((row) => ({
@@ -367,46 +520,57 @@ export function createPostgresStore(
     },
 
     async stats(from, to, bucket) {
-      const rows = await sql<
-        {
-          bucket: Date;
-          provider: string;
-          calls: number;
-          failures: number;
-          retries: number;
-          cache_hits: number;
-          p50: number | null;
-          p95: number | null;
-          queued: number | null;
-          cost_usd: number | null;
-        }[]
-      >`
-        SELECT date_trunc(${bucket}, sent_at, 'UTC') AS bucket, provider,
-          count(*)::int AS calls,
-          count(*) FILTER (WHERE NOT ok)::int AS failures,
-          coalesce(sum(retry_count), 0)::int AS retries,
-          count(*) FILTER (WHERE cache_hit)::int AS cache_hits,
-          -- A cache hit took no upstream time, so it is left out of latency and queueing.
-          (percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok AND NOT cache_hit))::float8 AS p50,
-          (percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok AND NOT cache_hit))::float8 AS p95,
-          (avg(queued_ms) FILTER (WHERE NOT cache_hit))::float8 AS queued,
-          sum(coalesce(reported_cost_usd, estimated_cost_usd))::float8 AS cost_usd
-        FROM gateway.search_calls
-        WHERE sent_at >= ${from} AND sent_at < ${to}
-        GROUP BY 1, 2
-        ORDER BY 1, 2`;
-      return rows.map((row) => ({
-        bucket: row.bucket.toISOString(),
-        provider: row.provider,
-        calls: row.calls,
-        failures: row.failures,
-        retries: row.retries,
-        cacheHits: row.cache_hits,
-        p50LatencyMs: row.p50,
-        p95LatencyMs: row.p95,
-        avgQueuedMs: row.queued,
-        costUsd: row.cost_usd === null ? null : round(row.cost_usd),
-      }));
+      const [rows, latencies] = await Promise.all([
+        sql<
+          {
+            bucket: Date;
+            provider: string;
+            calls: number;
+            failures: number;
+            retries: number;
+            cache_hits: number;
+            queued_ms_sum: number;
+            queued_calls: number;
+            cost_usd: number | null;
+          }[]
+        >`
+          SELECT date_trunc(${bucket}, hour, 'UTC') AS bucket, provider,
+            sum(calls)::int AS calls,
+            sum(calls - ok_calls)::int AS failures,
+            sum(retries)::int AS retries,
+            sum(cache_hits)::int AS cache_hits,
+            sum(queued_ms_sum)::float8 AS queued_ms_sum,
+            sum(queued_calls)::int AS queued_calls,
+            sum(cost_usd)::float8 AS cost_usd
+          FROM (${countFacts(from, to)}) facts
+          GROUP BY 1, 2
+          ORDER BY 1, 2`,
+        sql<{ bucket: Date; provider: string; latency_bucket: number; calls: number }[]>`
+          SELECT date_trunc(${bucket}, hour, 'UTC') AS bucket, provider,
+            bucket AS latency_bucket, sum(calls)::int AS calls
+          FROM (${latencyFacts(from, to)}) facts
+          GROUP BY 1, 2, 3`,
+      ]);
+      const histograms = new Map<string, [number, number][]>();
+      for (const row of latencies) {
+        const id = `${row.bucket.toISOString()}|${row.provider}`;
+        histograms.set(id, [...(histograms.get(id) ?? []), [row.latency_bucket, row.calls]]);
+      }
+      return rows.map((row) => {
+        const histogram = histograms.get(`${row.bucket.toISOString()}|${row.provider}`) ?? [];
+        return {
+          bucket: row.bucket.toISOString(),
+          provider: row.provider,
+          calls: row.calls,
+          failures: row.failures,
+          retries: row.retries,
+          cacheHits: row.cache_hits,
+          p50LatencyMs: histogramPercentile(histogram, 0.5),
+          p95LatencyMs: histogramPercentile(histogram, 0.95),
+          avgQueuedMs: row.queued_calls > 0 ? row.queued_ms_sum / row.queued_calls : null,
+          costUsd: row.cost_usd === null ? null : round(row.cost_usd),
+        };
+      });
     },
 
     async spendSince(dayStart, monthStart) {
@@ -414,14 +578,15 @@ export function createPostgresStore(
         { provider: string; period: "day" | "month"; calls: number; usd: number; credits: number }[]
       >`
         SELECT provider, period,
-          count(*)::int AS calls,
-          coalesce(sum(coalesce(reported_cost_usd, estimated_cost_usd)), 0)::float8 AS usd,
-          coalesce(sum(credits), 0)::float8 AS credits
-        FROM gateway.search_calls,
+          sum(billed_calls)::int AS calls,
+          sum(billed_usd)::float8 AS usd,
+          sum(billed_credits)::float8 AS credits
+        FROM (${countFacts(monthStart < dayStart ? monthStart : dayStart, new Date())}) facts,
           LATERAL (VALUES ('day', ${dayStart}::timestamptz), ('month', ${monthStart}::timestamptz))
             AS periods (period, started)
-        WHERE ok AND NOT cache_hit AND sent_at >= started
-        GROUP BY provider, period`;
+        WHERE hour >= started
+        GROUP BY provider, period
+        HAVING sum(billed_calls) > 0`;
       const byProvider = new Map<string, ProviderSpend>();
       for (const row of rows) {
         const entry = byProvider.get(row.provider) ?? {
@@ -446,16 +611,20 @@ export function createPostgresStore(
           error_message: string | null;
         }[]
       >`
-        SELECT provider, ok, latency_ms, received_at, error_type, error_message
-        FROM (
-          SELECT *, row_number() OVER (PARTITION BY provider ORDER BY sent_at DESC) AS recency
-          FROM gateway.search_calls
-          -- These failures say nothing about the provider: nothing was sent, or the caller was at fault.
-          WHERE NOT cache_hit
-            AND (error_type IS NULL OR NOT (error_type = ANY(${NOT_THE_PROVIDER as string[]})))
-        ) calls
-        WHERE recency <= ${perProvider}
-        ORDER BY provider, sent_at`;
+        SELECT recent.provider, ok, latency_ms, received_at, error_type, error_message
+        -- The providers ever called, from the small rollup table; then the newest calls of each,
+        -- read backwards along (provider, sent_at) instead of numbering the whole log.
+        FROM (SELECT DISTINCT provider FROM gateway.call_counts_hourly) providers,
+          LATERAL (
+            SELECT * FROM gateway.search_calls calls
+            WHERE calls.provider = providers.provider
+              AND NOT cache_hit
+              -- These failures say nothing about the provider: nothing was sent, or the caller was at fault.
+              AND (error_type IS NULL OR NOT (error_type = ANY(${NOT_THE_PROVIDER as string[]})))
+            ORDER BY sent_at DESC
+            LIMIT ${perProvider}
+          ) recent
+        ORDER BY recent.provider, sent_at`;
       return rows.map((row) => ({
         provider: row.provider,
         ok: row.ok,
@@ -468,18 +637,35 @@ export function createPostgresStore(
     async cleanup({ callDays, rawDays }) {
       let calls = 0;
       let raws = 0;
+      // Keep the partitions ahead of the calendar while here, so a month never starts without one.
+      await createPartitions(sql, [new Date(), nextMonth(new Date())]);
       if (callDays > 0) {
         const cutoff = new Date(Date.now() - callDays * 86_400_000);
-        calls = (await sql`DELETE FROM gateway.search_calls WHERE sent_at < ${cutoff}`).count;
+        // Months entirely before the cutoff go at once; dropping a table leaves no dead rows.
+        const partitions = await sql<{ name: string }[]>`
+          SELECT child.relname AS name
+          FROM pg_inherits
+          JOIN pg_class child ON child.oid = pg_inherits.inhrelid
+          WHERE pg_inherits.inhparent = 'gateway.search_calls'::regclass`;
+        for (const { name } of partitions) {
+          const month = /^search_calls_(\d{4})_(\d{2})$/.exec(name);
+          if (!month) continue;
+          const end = new Date(Date.UTC(Number(month[1]), Number(month[2]), 1));
+          if (end > cutoff) continue;
+          const [counted] = await sql<{ n: number }[]>`
+            SELECT count(*)::int AS n FROM gateway.${sql(name)}`;
+          await sql`DROP TABLE gateway.${sql(name)}`;
+          calls += counted?.n ?? 0;
+        }
+        // The rest of the cutoff falls inside one month: those rows are deleted one by one.
+        calls += (await sql`DELETE FROM gateway.search_calls WHERE sent_at < ${cutoff}`).count;
         await sql`DELETE FROM gateway.balance_snapshots WHERE taken_at < ${cutoff}`;
+        // A raw body never outlives its call.
+        await sql`DELETE FROM gateway.search_call_raws WHERE sent_at < ${cutoff}`;
       }
       if (rawDays > 0) {
         const cutoff = new Date(Date.now() - rawDays * 86_400_000);
-        raws = (
-          await sql`
-            UPDATE gateway.search_calls SET raw = NULL
-            WHERE raw IS NOT NULL AND sent_at < ${cutoff}`
-        ).count;
+        raws = (await sql`DELETE FROM gateway.search_call_raws WHERE sent_at < ${cutoff}`).count;
       }
       return { calls, raws };
     },

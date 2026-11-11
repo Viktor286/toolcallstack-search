@@ -19,6 +19,8 @@ Things worth knowing when you deploy the gateway:
 - The call log stores queries, results and, with `STORE_RAW=true`, full upstream responses. Use
   `CALL_LOG_RETENTION_DAYS` and `RAW_RETENTION_DAYS` if that data should not be kept indefinitely.
   The process log also records each call's query text, so treat it like the call log.
+  Retention leaves the hourly totals behind Usage and stats in place: they hold provider, key
+  fingerprint, client name, counts, cost and latency, but no query text or results.
 - With caching on, answers are held in memory and served to any client that sends an identical
   request to the same provider within the time it allows.
 - The dashboard keeps the gateway API key in the browser's local storage, and the Playground keeps

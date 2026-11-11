@@ -437,8 +437,18 @@ Transport, timing, retries, limits, cost, metrics and storage are shared and liv
   `token`, `secret`, `password`, `authorization`) in a caller's `options` are stored as
   `[redacted]`; the provider still receives the real value. Provider API keys are never stored.
 - **Call log**: with `DATABASE_URL` set, every call is written to `gateway.search_calls` (params,
-  timing, attempts, results, usage; raw bodies too with `STORE_RAW=true`) and is readable through
-  `/v1/calls`. Writes happen off the request path so the database never delays a measurement.
+  timing, attempts, results, usage) and is readable through `/v1/calls`. Raw bodies go to
+  `gateway.search_call_raws` with `STORE_RAW=true`. Writes happen off the request path so the
+  database never delays a measurement.
+- **Call log at scale**: `search_calls` is partitioned by UTC month. Each month's partition is
+  created ahead of time at start, or by the first call that needs it, so nothing has to be
+  scheduled. Retention drops whole months at once and deletes rows only in the month the cutoff
+  falls in. The same write that logs a call adds it to hourly totals (`call_counts_hourly`, per
+  provider, key and client) and to an hourly latency histogram (`call_latency_hourly`). `/v1/stats`,
+  `/v1/usage`, budgets and health read those instead of the log; only a part-hour at the edge of a
+  window is read from the log. Counts and cost are exact. p50 and p95 are estimated from the
+  histogram, within 2.5%. The hourly totals are kept when retention removes calls, so Usage still
+  covers months whose calls are gone.
 - **Load shedding**: while the event loop lags by more than `MAX_EVENT_LOOP_DELAY_MS` the gateway
   answers 503, because timings taken then would be skewed.
 
@@ -462,31 +472,31 @@ The MCP endpoint is stateless and the call log is shared already, so nothing els
 
 ## Configuration
 
-| Variable                        | Default           | Meaning                                                                       |
-| ------------------------------- | ----------------- | ----------------------------------------------------------------------------- |
-| `PORT`, `HOST`                  | `4310`, `0.0.0.0` |                                                                               |
-| `GATEWAY_API_KEYS`              | empty             | Comma-separated bearer tokens, optionally `name:token`. Empty disables auth.  |
-| `DATABASE_URL`                  | unset             | Postgres. Migrations run at start.                                            |
-| `STORE_RAW`                     | `false`           | Store raw upstream bodies in the call log.                                    |
-| `DEMO_MODE`                     | `auto`            | Built-in demo providers: `auto` (only without real keys), `true`, `false`.    |
-| `SHARED_STATE`                  | `false`           | Share limits, budgets and health between instances. Needs `DATABASE_URL`.     |
-| `SHARED_STATE_SYNC_SECONDS`     | `10`              | How often budgets and health are reloaded from the call log.                  |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`   | unset             | OTLP/HTTP endpoint for traces. Unset turns tracing off.                       |
-| `DEFAULT_TIMEOUT_MS`            | `30000`           | Per-attempt timeout when the request sets none.                               |
-| `MAX_RETRIES`                   | `5`               | Retries per call when the request sets none.                                  |
-| `RETRY_BASE_MS`, `RETRY_MAX_MS` | `500`, `8000`     | First backoff step and the cap on any single wait.                            |
-| `PROVIDER_LIMITS`               | `{}`              | JSON by provider id: `{"tavily":{"rpm":100,"concurrency":10}}`.               |
-| `MAX_QUEUE_MS`                  | `30000`           | Queue wait limit when the request sets none.                                  |
-| `PROVIDER_PRICING`              | `{}`              | JSON by provider id: `{"brave":{"perRequestUsd":0.005}}`.                     |
-| `PROVIDER_BUDGETS`              | `{}`              | JSON by provider id: spend caps, see [Budgets](#budgets).                     |
-| `CALL_LOG_RETENTION_DAYS`       | `0`               | Delete logged calls and balance snapshots older than this. `0` keeps them.    |
-| `RAW_RETENTION_DAYS`            | `0`               | Drop stored raw upstream bodies older than this. `0` keeps them.              |
-| `BALANCE_POLL_SECONDS`          | `300`             | Balance polling interval. `0` disables. Snapshots need `DATABASE_URL`.        |
-| `CACHE_TTL_SECONDS`             | `0`               | Default `cacheTtlSeconds` for requests that set none. `0` leaves caching off. |
-| `CACHE_MAX_ENTRIES`             | `1000`            | Most answers the in-memory cache keeps per instance.                          |
-| `INBOUND_RATE_LIMIT_RPM`        | `0`               | Requests per minute per gateway API key. `0` disables.                        |
-| `MAX_EVENT_LOOP_DELAY_MS`       | `1000`            | Load-shedding threshold. `0` disables.                                        |
-| `LOG_LEVEL`                     | `info`            |                                                                               |
+| Variable                        | Default           | Meaning                                                                                        |
+| ------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------- |
+| `PORT`, `HOST`                  | `4310`, `0.0.0.0` |                                                                                                |
+| `GATEWAY_API_KEYS`              | empty             | Comma-separated bearer tokens, optionally `name:token`. Empty disables auth.                   |
+| `DATABASE_URL`                  | unset             | Postgres. Migrations run at start.                                                             |
+| `STORE_RAW`                     | `false`           | Store raw upstream bodies in the call log.                                                     |
+| `DEMO_MODE`                     | `auto`            | Built-in demo providers: `auto` (only without real keys), `true`, `false`.                     |
+| `SHARED_STATE`                  | `false`           | Share limits, budgets and health between instances. Needs `DATABASE_URL`.                      |
+| `SHARED_STATE_SYNC_SECONDS`     | `10`              | How often budgets and health are reloaded from the call log.                                   |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`   | unset             | OTLP/HTTP endpoint for traces. Unset turns tracing off.                                        |
+| `DEFAULT_TIMEOUT_MS`            | `30000`           | Per-attempt timeout when the request sets none.                                                |
+| `MAX_RETRIES`                   | `5`               | Retries per call when the request sets none.                                                   |
+| `RETRY_BASE_MS`, `RETRY_MAX_MS` | `500`, `8000`     | First backoff step and the cap on any single wait.                                             |
+| `PROVIDER_LIMITS`               | `{}`              | JSON by provider id: `{"tavily":{"rpm":100,"concurrency":10}}`.                                |
+| `MAX_QUEUE_MS`                  | `30000`           | Queue wait limit when the request sets none.                                                   |
+| `PROVIDER_PRICING`              | `{}`              | JSON by provider id: `{"brave":{"perRequestUsd":0.005}}`.                                      |
+| `PROVIDER_BUDGETS`              | `{}`              | JSON by provider id: spend caps, see [Budgets](#budgets).                                      |
+| `CALL_LOG_RETENTION_DAYS`       | `0`               | Delete logged calls and balance snapshots older than this; hourly totals stay. `0` keeps them. |
+| `RAW_RETENTION_DAYS`            | `0`               | Drop stored raw upstream bodies older than this. `0` keeps them.                               |
+| `BALANCE_POLL_SECONDS`          | `300`             | Balance polling interval. `0` disables. Snapshots need `DATABASE_URL`.                         |
+| `CACHE_TTL_SECONDS`             | `0`               | Default `cacheTtlSeconds` for requests that set none. `0` leaves caching off.                  |
+| `CACHE_MAX_ENTRIES`             | `1000`            | Most answers the in-memory cache keeps per instance.                                           |
+| `INBOUND_RATE_LIMIT_RPM`        | `0`               | Requests per minute per gateway API key. `0` disables.                                         |
+| `MAX_EVENT_LOOP_DELAY_MS`       | `1000`            | Load-shedding threshold. `0` disables.                                                         |
+| `LOG_LEVEL`                     | `info`            |                                                                                                |
 
 Provider keys and their variable names are listed in [.env.example](.env.example).
 

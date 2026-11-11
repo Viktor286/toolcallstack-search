@@ -28,6 +28,12 @@ the version is below 1.0 a minor release may change the API.
   runs"; a search can be cancelled and shows how long it has waited; a cached answer can be fetched
   again fresh; copied links keep per-provider options; result counts go up to the chosen providers'
   limits, with a note when one returns fewer; the examples stay available after typing a query.
+- The call log scales: `search_calls` is partitioned by month, so retention drops whole months,
+  and stats, usage, budgets and health read hourly totals kept current on every write instead of
+  scanning the log. On a million calls, 30-day stats went from 0.84 s to 0.17 s, spend from 219 ms
+  to 4 ms and health reload from 1.65 s to 5 ms. p50 and p95 are now estimated from latency
+  buckets, within 2.5%; counts and cost stay exact. Hourly totals outlive call retention. Raw
+  bodies move to their own table. Migration 007 converts an existing log in place.
 - Provider health is restored from each provider's last 20 logged calls at start, as spend already
   was, so a restart no longer shows "No calls" and "Last success: never" next to the day's traffic.
 - `minRemaining` budgets work without a database, and the gateway warns when one cannot apply.
