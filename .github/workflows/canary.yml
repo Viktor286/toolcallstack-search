@@ -39,7 +39,7 @@ jobs:
       - if: steps.keys.outputs.present == 'true'
         uses: actions/checkout@v4
       - if: steps.keys.outputs.present == 'true'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
       - if: steps.keys.outputs.present == 'true'
         uses: actions/setup-node@v4
         with:
