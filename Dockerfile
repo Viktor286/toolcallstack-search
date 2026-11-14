@@ -1,5 +1,5 @@
 # Node 24 runs the gateway's TypeScript sources directly; only the dashboard is built.
-FROM node:24-slim AS base
+FROM node:26-slim AS base
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # The pnpm version pinned in package.json. Not through corepack, which Node 25 no longer ships.
